@@ -505,6 +505,22 @@ export async function buildCommand(movie, start, dur, out, sIn, info, { crop = n
   return { cmd, tmp, dur, OW, OH };
 }
 
+// video bitrate (kbps) of a finished file, 0 when unknown
+export async function videoKbps(path) {
+  const r = await ffrun(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=bit_rate:format=bit_rate,duration,size", "-of", "json", path], { tool: "ffprobe" });
+  try {
+    const d = JSON.parse(r.stdout);
+    const v = +((d.streams || [])[0] || {}).bit_rate;
+    if (v > 0) return Math.round(v / 1000);
+    const f = d.format || {};
+    if (+f.size > 0 && +f.duration > 0) return Math.round((+f.size * 8) / +f.duration / 1000);
+  } catch (e) { /* unknown */ }
+  return 0;
+}
+
+// once a phone's hardware encoder has missed the bitrate, the CPU encoder is used directly for the rest of the session
+let hardwareWeak = false;
+
 // ------------------------------------------------------------------ runners
 export class Runner {
   constructor(settings, log, progress, onClip, tmpDir) {
@@ -541,10 +557,20 @@ export class Runner {
       for (const t of tmp) bridge().remove(t);
       return [r.code === 0, err || r.stderr || ""];
     };
-    let [ok, err] = await run(S.codec);
-    if (!ok && !this.stopFlag && isHardware(S.codec)) {
+    const first = hardwareWeak && isHardware(S.codec) && String(S.rate_mode).startsWith("Exact") ? "H.264 (CPU)" : S.codec;
+    let [ok, err] = await run(first);
+    if (!ok && !this.stopFlag && isHardware(first)) {
       this.log("Phone hardware encoder failed, retrying with the CPU encoder (libx264)...");
       [ok, err] = await run("H.264 (CPU)");
+    } else if (ok && !this.stopFlag && isHardware(first) && !S._fast && String(S.rate_mode).startsWith("Exact")) {
+      // some phones' video chips ignore the bitrate: then the clip is made again with x264, which always obeys it
+      const got = await videoKbps(part);
+      const want = Math.round(+S.bitrate);
+      if (got > 0 && got < want * 0.7) {
+        this.log(`This phone's hardware encoder gave only ${got} kbps (you asked ${want} kbps) - exporting again with the CPU encoder for the exact bitrate ...`);
+        hardwareWeak = true;
+        [ok, err] = await run("H.264 (CPU)");
+      }
     }
     if (ok && !this.stopFlag) {
       await bridge().remove(out);
