@@ -52,7 +52,7 @@ COMMON=(--prefix="$PREFIX" --target-os=android --arch="$ARCH" --enable-cross-com
   --disable-doc --disable-ffplay --enable-ffmpeg --enable-ffprobe --disable-debug
   --disable-indev=android_camera --disable-vulkan
   --enable-libx264 $FF_EXTRA)
-if ! ./configure "${COMMON[@]}" --enable-mediacodec; then
+if ! ./configure "${COMMON[@]}" --enable-jni --enable-mediacodec; then
   echo "!! configure with MediaCodec failed - building without the hardware encoder (the app falls back to x264)"
   tail -50 ffbuild/config.log || true
   ./configure "${COMMON[@]}"
