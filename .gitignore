@@ -1,0 +1,13 @@
+node_modules/
+web/vendor/
+web/fonts/
+android/app/src/main/assets/web/
+android/app/src/main/jniLibs/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+build-ffmpeg/
+*.apk
+*.keystore
+!android/app/release.keystore
