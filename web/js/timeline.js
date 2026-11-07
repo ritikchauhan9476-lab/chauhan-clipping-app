@@ -12,7 +12,7 @@ import {
   alertBox, sheet, toast,
 } from "./ui.js";
 
-const RULER_H = 26, TRACK_H = 34, PAD_X = 12, MIN_LEN = 0.2;
+const RULER_H = 24, TRACK_H = 26, PAD_X = 12, MIN_LEN = 0.2;
 const TRACKS = [["T", 3], ["T", 2], ["T", 1], ["O", 3], ["O", 2], ["O", 1], ["V", 1], ["A", 1], ["A", 2], ["A", 3]];
 const KIND_KEY = { text: "texts", overlay: "overlays", audio: "audios" };
 const KIND_LETTER = { text: "T", overlay: "O", audio: "A" };
@@ -244,7 +244,7 @@ export class TimelineTab {
       const a = Math.max(-10, this.x(0)), b = Math.min(W + 10, this.x(dur));
       g.fillRect(a, y0, b - a, TRACK_H - 6); g.strokeRect(a, y0, b - a, TRACK_H - 6);
       g.fillStyle = "#bbb"; g.font = "11px sans-serif";
-      g.fillText(E.basename(this.movie).slice(0, 40), Math.max(a, 0) + 4, y0 + 18);
+      g.fillText(E.basename(this.movie).slice(0, 40), Math.max(a, 0) + 4, y0 + 14);
     }
     for (const kind of ["audio", "overlay", "text"]) {
       this.lists()[kind].forEach((it, i) => {
@@ -257,7 +257,7 @@ export class TimelineTab {
         g.lineWidth = 1;
         g.save(); g.beginPath(); g.rect(a, y0, b - a, y1 - y0); g.clip();
         g.fillStyle = "#EAFFEA"; g.font = "11px sans-serif";
-        g.fillText(itemLabel(kind, it), Math.max(a, 0) + 4, y0 + 18);
+        g.fillText(itemLabel(kind, it), Math.max(a, 0) + 4, y0 + 14);
         g.restore();
         if (on) { g.fillStyle = "#FFFFFF"; g.fillRect(x0 - 2, y0 + 6, 4, y1 - y0 - 12); g.fillRect(x1 - 2, y0 + 6, 4, y1 - y0 - 12); }
       });

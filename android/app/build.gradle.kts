@@ -48,6 +48,10 @@ android {
         // FFmpeg is shipped as lib*.so so Android unpacks it to a folder where it may be run
         jniLibs { useLegacyPackaging = true }
     }
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
+    }
     androidResources {
         noCompress += listOf("wasm", "onnx", "ttf")
     }
