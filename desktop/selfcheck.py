@@ -62,6 +62,10 @@ def t_window():
         assert "DIALOGUE" in st.exp_go.cget("text")
         st.dl_on.set(False); st.sil_on.set(True); st.update_cut_info()
         assert "SILENCE" in st.exp_go.cget("text")
+        st.head_on.set(True); st.head_sec.set("3")
+        assert st.with_tail([(10.0, 1.0)], 10.0, 20.0) == [(10.0, 1.0), (13.0, 7.0)], st.with_tail([(10.0, 1.0)], 10.0, 20.0)
+        assert st.with_tail([(10.0, 1.0)], 10.0, 12.0) == [(10.0, 1.0)]
+        st.head_on.set(False)
     w.update()
     w.destroy()
     return f"{len(studios)} studio(s)"

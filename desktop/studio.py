@@ -116,6 +116,8 @@ class Studio(ctk.CTkFrame):
                                  text_color=GREY, anchor="w")
         self.hint.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 6))
 
+        self.head_on = tk.BooleanVar(value=False)      # cut only the first N seconds of every part
+        self.head_sec = tk.StringVar(value="3")
         self.dl_on = tk.BooleanVar(value=False)        # dialogue clean-up ON / OFF (same switch in several tabs)
         self.right = ctk.CTkTabview(self, width=410)
         self.right.grid(row=1, column=2, sticky="nsew", padx=(4, 6), pady=(0, 6))
@@ -341,6 +343,13 @@ class Studio(ctk.CTkFrame):
                       command=self.update_cut_info).pack(anchor="w", padx=10, pady=4)
         ctk.CTkSwitch(f, text="Dialogue clean-up (keep only talking)", variable=self.dl_on, text_color=TEXT,
                       command=self.update_cut_info).pack(anchor="w", padx=10, pady=4)
+        hr = ctk.CTkFrame(f, fg_color="transparent")
+        hr.pack(fill="x", padx=10, pady=4)
+        ctk.CTkSwitch(hr, text="Apply only to the first", variable=self.head_on, text_color=TEXT,
+                      command=self.update_cut_info).pack(side="left")
+        ctk.CTkEntry(hr, width=48, textvariable=self.head_sec).pack(side="left", padx=6)
+        ctk.CTkLabel(hr, text="seconds of every part (rest stays normal)", text_color=TEXT).pack(side="left")
+        self.head_sec.trace_add("write", lambda *a: self.update_cut_info())
         self.cut_info = ctk.CTkLabel(f, text="", text_color=GREY, wraplength=360, justify="left", anchor="w")
         self.cut_info.pack(fill="x", padx=10, pady=(0, 6))
         self.preset_menu = ctk.CTkOptionMenu(f, values=list(E.EXPORT_PRESETS), command=self.apply_export_preset)
@@ -383,6 +392,23 @@ class Studio(ctk.CTkFrame):
         self.exp_log.pack(fill="x", padx=10, pady=(4, 10))
         self.update_cut_info()
 
+    def head_seconds(self):
+        try:
+            return max(0.5, float(str(self.head_sec.get()).replace(",", ".")))
+        except ValueError:
+            return 3.0
+
+    def head_end(self, start, end):
+        """End of the part that gets cut (None = the whole part)."""
+        if not self.head_on.get():
+            return None
+        h = start + self.head_seconds()
+        return h if h < end - 0.05 else None
+
+    def with_tail(self, pieces, start, end):
+        h = self.head_end(start, end)
+        return pieces if h is None else list(pieces) + [(h, end - h)]
+
     def update_cut_info(self):
         """Shows what the export button will do with the two switches."""
         dl, sl = bool(self.dl_on.get()), bool(self.sil_on.get())
@@ -393,6 +419,8 @@ class Studio(ctk.CTkFrame):
             msg = "Silence cut is ON: long silent pauses are removed from the ticked parts (parts with 'cut silence' ticked)."
         else:
             msg = "Both OFF: the movie is only converted into parts. Nothing is removed - no silence, no dialogue cut."
+        if (dl or sl) and self.head_on.get():
+            msg += f"  Only the first {self.head_seconds():g} s of every part is cut; the rest of the part stays as it is."
         try:
             self.cut_info.configure(text=msg)
             self.exp_go.configure(text="EXPORT SELECTED PARTS" + (" (DIALOGUE CLEAN-UP)" if dl else " (SILENCE CUT)" if sl else " (PLAIN PARTS)"))
@@ -1191,7 +1219,8 @@ class Studio(ctk.CTkFrame):
         for p in self.parts:
             if not (p["on"] and p["sil"]):
                 continue
-            keep = E.silence_keep_ranges(self.sil_list, p["start"], p["end"], float(self.sil_pad.get()), 0.3)
+            he = self.head_end(p["start"], p["end"])
+            keep = self.with_tail(E.silence_keep_ranges(self.sil_list, p["start"], he or p["end"], float(self.sil_pad.get()), 0.3), p["start"], p["end"])
             total += (p["end"] - p["start"]) - sum(d for _, d in keep)
         return total
 
@@ -1262,7 +1291,12 @@ class Studio(ctk.CTkFrame):
                     def prepare(plan):
                         log(f"Dialogue: finding the talking in {plan['file']} "
                             f"({plan['start']:.1f}s - {plan['end']:.1f}s)")
-                        pieces, _ = dialogue.analyze(movie, plan["start"], plan["end"], dl_opts, work_dir, log)
+                        he = self.head_end(plan["start"], plan["end"])
+                        pieces, _ = dialogue.analyze(movie, plan["start"], he or plan["end"], dl_opts, work_dir, log)
+                        if he is not None:
+                            if not pieces:      # nothing to keep in the first seconds: leave the part as it is
+                                pieces = [(plan["start"], he - plan["start"])]
+                            pieces = self.with_tail(pieces, plan["start"], plan["end"])
                         if not pieces:
                             return None
                         total = sum(d for _, d in pieces)
@@ -1291,7 +1325,8 @@ class Studio(ctk.CTkFrame):
             number = self.part_number(idx)
             ovs, txs = self.localized(p, number)
             if self.sil_on.get() and p["sil"]:
-                pieces = E.silence_keep_ranges(self.sil_list, p["start"], p["end"], pad, 0.3)
+                he = self.head_end(p["start"], p["end"])
+                pieces = self.with_tail(E.silence_keep_ranges(self.sil_list, p["start"], he or p["end"], pad, 0.3), p["start"], p["end"])
             else:
                 pieces = [(p["start"], p["end"] - p["start"])]
             mm, ss = divmod(int(p["start"]), 60)
@@ -1502,7 +1537,7 @@ class Studio(ctk.CTkFrame):
             silence=dict(on=bool(self.sil_on.get()), db=float(self.sil_db.get()), min=float(self.sil_min.get()),
                          pad=float(self.sil_pad.get()), key=list(self.sil_key) if self.sil_key else None,
                          list=[list(x) for x in self.sil_list]),
-            dialogue=dict(on=bool(self.dl_on.get()), denoise=bool(self.dl_denoise.get()), vad=bool(self.dl_vad.get()),
+            dialogue=dict(head_on=bool(self.head_on.get()), head_sec=self.head_seconds(), on=bool(self.dl_on.get()), denoise=bool(self.dl_denoise.get()), vad=bool(self.dl_vad.get()),
                           whisper=bool(self.dl_whisper.get()), pad=float(self.dl_pad.get()),
                           minsil=float(self.dl_minsil.get()), remove=self.dl_remove.get(), lang=self.dl_lang.get(),
                           minpiece=float(self.dl_minpiece.get()), scan=bool(self.dl_scan.get())),
@@ -1606,6 +1641,8 @@ class Studio(ctk.CTkFrame):
     def _restore_dialogue(self, st):
         dl = st.get("dialogue") or {}
         self.dl_on.set(bool(dl.get("on", False)))
+        self.head_on.set(bool(dl.get("head_on", False)))
+        self.head_sec.set(f"{float(dl.get('head_sec', 3)):g}")
         self.dl_denoise.set(bool(dl.get("denoise", True)))
         self.dl_vad.set(bool(dl.get("vad", True)))
         self.dl_whisper.set(bool(dl.get("whisper", False)))

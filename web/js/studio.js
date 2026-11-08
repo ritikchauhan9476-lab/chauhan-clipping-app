@@ -29,7 +29,7 @@ export class Studio {
     this.partIdx = 0; this.tRel = 0;
     this.silList = []; this.silKey = null;
     this.sil = { on: true, db: -35, min: 2.0, pad: 0.25 };
-    this.dl = { on: false, denoise: true, vad: true, whisper: false, pad: 150, minsil: 300, minpiece: D.MIN_PIECE, scan: false, remove: "um, uh", lang: "", model: "base" };
+    this.dl = { head_on: false, head_sec: 3, on: false, denoise: true, vad: true, whisper: false, pad: 150, minsil: 300, minpiece: D.MIN_PIECE, scan: false, remove: "um, uh", lang: "", model: "base" };
     this.range = { start: "0", end: "", count: "3", length: "0" };
     this.numStart = "1";
     this.panel = mode === "ai" ? "AI" : "Parts";
@@ -667,7 +667,8 @@ export class Studio {
     let total = 0;
     for (const p of this.parts) {
       if (!(p.on && p.sil)) continue;
-      const keep = E.silenceKeepRanges(this.silList, p.start, p.end, +this.sil.pad, 0.3);
+      const he = this.headEnd(p.start, p.end);
+      const keep = this.withTail(E.silenceKeepRanges(this.silList, p.start, he ?? p.end, +this.sil.pad, 0.3), p.start, p.end);
       total += p.end - p.start - keep.reduce((a, [, d]) => a + d, 0);
     }
     return total;
@@ -692,6 +693,8 @@ export class Studio {
     b.append(section("CUTTING (ON / OFF)"),
       checkField("Cut silent pauses", this.sil.on, (v) => { this.sil.on = v; this.app.changed(); this.updateCutInfo(); }).el,
       checkField("Dialogue clean-up (keep only talking)", this.dl.on, (v) => { this.dl.on = v; this.app.changed(); this.updateCutInfo(); }).el,
+      checkField("Apply only to the first few seconds of every part (rest stays normal)", this.dl.head_on, (v) => { this.dl.head_on = v; this.app.changed(); this.updateCutInfo(); }).el,
+      textField("Seconds at the start of every part", String(this.dl.head_sec), (v) => { this.dl.head_sec = Math.max(0.5, +String(v).replace(",", ".") || 3); this.app.changed(); this.updateCutInfo(); }, { type: "number", inputmode: "decimal" }).el,
       this.cutInfo);
     b.append(selectField("Quick preset", [["", "Quick preset - choose one ..."], ...Object.keys(E.EXPORT_PRESETS)], "", (v) => {
       if (!v) return;
@@ -725,6 +728,17 @@ export class Studio {
     this.updateCutInfo();
   }
 
+  // "first N seconds only": end of the part that gets cut (null = whole part)
+  headEnd(start, end) {
+    if (!this.dl.head_on) return null;
+    const h = start + Math.max(0.5, +this.dl.head_sec || 3);
+    return h < end - 0.05 ? h : null;
+  }
+  withTail(pieces, start, end) {
+    const h = this.headEnd(start, end);
+    return h === null ? pieces : [...pieces, [h, end - h]];
+  }
+
   // what the export button will do with the two switches
   updateCutInfo() {
     const dl = !!this.dl.on, sl = !!this.sil.on;
@@ -732,6 +746,7 @@ export class Studio {
       ? "Dialogue clean-up is ON: only the talking is kept in every ticked part (silence and pauses are removed)."
       : sl ? "Silence cut is ON: long silent pauses are removed from the ticked parts (parts with 'cut silence' ticked)."
         : "Both OFF: the movie is only converted into parts. Nothing is removed - no silence, no dialogue cut.";
+    if (this.cutInfo && (dl || sl) && this.dl.head_on) this.cutInfo.textContent += `  Only the first ${+this.dl.head_sec || 3} s of every part is cut; the rest stays as it is.`;
     if (this.expGo) this.expGo.textContent = "EXPORT SELECTED PARTS" + (dl ? " (DIALOGUE CLEAN-UP)" : sl ? " (SILENCE CUT)" : " (PLAIN PARTS)");
   }
 
@@ -752,7 +767,9 @@ export class Studio {
     return chosen.map(([idx, p]) => {
       const number = this.partNumber(idx);
       const [ovs, txs, auds] = this.localized(p, number);
-      const pieces = this.sil.on && p.sil ? E.silenceKeepRanges(this.silList, p.start, p.end, pad, 0.3) : [[p.start, p.end - p.start]];
+      const pieces = this.sil.on && p.sil
+        ? this.withTail(E.silenceKeepRanges(this.silList, p.start, this.headEnd(p.start, p.end) ?? p.end, pad, 0.3), p.start, p.end)
+        : [[p.start, p.end - p.start]];
       const mm = Math.floor(p.start / 60), ss = Math.floor(p.start % 60);
       return { file: `${base}_part${String(number).padStart(2, "0")}_${E.pad2(mm)}m${E.pad2(ss)}s.mp4`, start: p.start, end: p.end, label: p.label || "", pieces, overlays: ovs, texts: txs, audios: auds, number };
     });
@@ -791,7 +808,12 @@ export class Studio {
     if (dl) {
       prepare = async (plan) => {
         log(`Dialogue: finding the talking in ${plan.file} (${plan.start.toFixed(1)}s - ${plan.end.toFixed(1)}s)`);
-        const pieces = await D.analyze(movie, plan.start, plan.end, dl, tmp, log, eng.job);
+        const he = this.headEnd(plan.start, plan.end);
+        let pieces = await D.analyze(movie, plan.start, he ?? plan.end, dl, tmp, log, eng.job);
+        if (he !== null) {
+          if (!pieces.length) pieces = [[plan.start, he - plan.start]];   // nothing to keep at the start: leave it as it is
+          pieces = this.withTail(pieces, plan.start, plan.end);
+        }
         if (!pieces.length) return null;
         const total = pieces.reduce((a, [, d]) => a + d, 0);
         const [ovs, txs, auds] = relativeItems(items, total, plan.number);
@@ -1018,7 +1040,7 @@ export class Studio {
       parts: JSON.parse(JSON.stringify(this.parts)), part_idx: this.partIdx, t_rel: Math.round(this.tRel * 1000) / 1000, sel: this.sel,
       num_start: this.numStart,
       silence: { on: this.sil.on, db: +this.sil.db, min: +this.sil.min, pad: +this.sil.pad, key: this.silKey, list: this.silList },
-      dialogue: { on: !!this.dl.on, denoise: this.dl.denoise, vad: this.dl.vad, whisper: this.dl.whisper, pad: +this.dl.pad, minsil: +this.dl.minsil,
+      dialogue: { head_on: !!this.dl.head_on, head_sec: +this.dl.head_sec || 3, on: !!this.dl.on, denoise: this.dl.denoise, vad: this.dl.vad, whisper: this.dl.whisper, pad: +this.dl.pad, minsil: +this.dl.minsil,
         remove: this.dl.remove, lang: this.dl.lang, minpiece: +this.dl.minpiece, scan: this.dl.scan, model: this.dl.model },
       right_tab: this.panel,
     };
@@ -1050,7 +1072,7 @@ export class Studio {
     });
     await step("dialogue", () => {
       const d = st.dialogue || {};
-      this.dl = { on: !!d.on, denoise: d.denoise ?? true, vad: d.vad ?? true, whisper: !!d.whisper, pad: +(d.pad ?? 150), minsil: +(d.minsil ?? 300),
+      this.dl = { head_on: !!d.head_on, head_sec: +(d.head_sec ?? 3) || 3, on: !!d.on, denoise: d.denoise ?? true, vad: d.vad ?? true, whisper: !!d.whisper, pad: +(d.pad ?? 150), minsil: +(d.minsil ?? 300),
         minpiece: +(d.minpiece ?? D.MIN_PIECE), scan: !!d.scan, remove: String(d.remove ?? "um, uh"), lang: String(d.lang ?? ""), model: d.model || "base" };
     });
     await step("position", () => {
