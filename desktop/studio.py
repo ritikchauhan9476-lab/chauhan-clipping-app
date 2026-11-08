@@ -379,6 +379,8 @@ class Studio(ctk.CTkFrame):
         self.exp_bar.pack(fill="x", padx=10, pady=(8, 2))
         self.exp_status = ctk.CTkLabel(f, text="Ready", text_color=GREY, anchor="w")
         self.exp_status.pack(fill="x", padx=10)
+        self.exp_log = ctk.CTkTextbox(f, height=180)
+        self.exp_log.pack(fill="x", padx=10, pady=(4, 10))
         self.update_cut_info()
 
     def update_cut_info(self):
@@ -396,8 +398,6 @@ class Studio(ctk.CTkFrame):
             self.exp_go.configure(text="EXPORT SELECTED PARTS" + (" (DIALOGUE CLEAN-UP)" if dl else " (SILENCE CUT)" if sl else " (PLAIN PARTS)"))
         except Exception:
             pass
-        self.exp_log = ctk.CTkTextbox(f, height=180)
-        self.exp_log.pack(fill="x", padx=10, pady=(4, 10))
 
     # ---------------- right: dialogue clean-up (only the selected parts)
     def apply_export_preset(self, name):
