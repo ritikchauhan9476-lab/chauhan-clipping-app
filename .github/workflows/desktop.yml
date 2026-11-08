@@ -22,6 +22,8 @@ jobs:
 
       - name: Assemble the portable folder
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $root = "$PWD"
@@ -44,14 +46,14 @@ jobs:
           foreach ($d in 'input_movies','exported_clips','projects') { New-Item -ItemType Directory -Force "$out\$d" | Out-Null }
 
           # 3) FFmpeg + FFprobe
-          $urls = @(
-            'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-7.1.zip',
-            'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip')
-          $ok = $false
-          foreach ($u in $urls) {
-            try { Invoke-WebRequest $u -OutFile ff.zip -TimeoutSec 600; $ok = $true; break } catch { Write-Host "download failed: $u" }
-          }
-          if (-not $ok) { throw "FFmpeg download failed" }
+          $names = gh api repos/BtbN/FFmpeg-Builds/releases/tags/latest --jq '.assets[].name'
+          Write-Host ($names | Where-Object { $_ -match 'win64-gpl' })
+          $pick = $names | Where-Object { $_ -match '^ffmpeg-n7\.1-latest-win64-gpl-7\.1\.zip$' } | Select-Object -First 1
+          if (-not $pick) { $pick = $names | Where-Object { $_ -match '^ffmpeg-n[0-9.]+-latest-win64-gpl-[0-9.]+\.zip$' } | Sort-Object -Descending | Select-Object -First 1 }
+          if (-not $pick) { $pick = 'ffmpeg-master-latest-win64-gpl.zip' }
+          Write-Host "FFmpeg build: $pick"
+          gh release download latest -R BtbN/FFmpeg-Builds -p $pick -O ff.zip
+          if ($LASTEXITCODE -ne 0) { throw "FFmpeg download failed" }
           Expand-Archive ff.zip ffx -Force
           New-Item -ItemType Directory -Force "$out\ffmpeg" | Out-Null
           foreach ($n in 'ffmpeg.exe','ffprobe.exe') {
