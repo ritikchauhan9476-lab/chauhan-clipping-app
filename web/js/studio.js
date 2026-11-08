@@ -634,6 +634,7 @@ export class Studio {
     const b = this.body, S = this.sil;
     const changed = () => { this.updateSilSummary(); this.app.changed(); };
     b.append(checkField("Cut long silent pauses (only in ticked parts)", S.on, (v) => { S.on = v; changed(); this.updateCutInfo(); }).el,
+      ...this.headControls(),
       section("SETTINGS"),
       new NumField("Quiet below (dB)", -60, -20, 1, S.db, { fmt: 0, onChange: (v) => { S.db = v; changed(); } }).el,
       new NumField("Silence longer than (s)", 0.5, 10, 0.5, S.min, { fmt: 1, onChange: (v) => { S.min = v; changed(); } }).el,
@@ -681,7 +682,7 @@ export class Studio {
     if (!this.silKey) { this.silSummary.textContent = "Not scanned yet"; this.silText.textContent = ""; return; }
     if (!fresh) { this.silSummary.textContent = "Settings changed. Scan again to update."; return; }
     const tot = this.silList.reduce((a, [s, e]) => a + (e - s), 0);
-    this.silSummary.textContent = `${this.silList.length} silent stretches, ${tot.toFixed(0)}s in total. In the ticked parts about ${this.removedSeconds().toFixed(0)}s will be cut.`;
+    this.silSummary.textContent = `${this.silList.length} silent stretches, ${tot.toFixed(0)}s in total. In the ticked parts about ${this.removedSeconds().toFixed(0)}s will be cut${this.dl.head_on ? ` (only the first ${+this.dl.head_sec || 3}s of every part)` : ""}.`;
     this.silText.textContent = this.silList.slice(0, 300).map(([s, e]) => `${E.tstr(s)} - ${E.tstr(e)}  (${(e - s).toFixed(1)}s)`).join("\n");
   }
 
@@ -693,8 +694,7 @@ export class Studio {
     b.append(section("CUTTING (ON / OFF)"),
       checkField("Cut silent pauses", this.sil.on, (v) => { this.sil.on = v; this.app.changed(); this.updateCutInfo(); }).el,
       checkField("Dialogue clean-up (keep only talking)", this.dl.on, (v) => { this.dl.on = v; this.app.changed(); this.updateCutInfo(); }).el,
-      checkField("Apply only to the first few seconds of every part (rest stays normal)", this.dl.head_on, (v) => { this.dl.head_on = v; this.app.changed(); this.updateCutInfo(); }).el,
-      textField("Seconds at the start of every part", String(this.dl.head_sec), (v) => { this.dl.head_sec = Math.max(0.5, +String(v).replace(",", ".") || 3); this.app.changed(); this.updateCutInfo(); }, { type: "number", inputmode: "decimal" }).el,
+      ...this.headControls(),
       this.cutInfo);
     b.append(selectField("Quick preset", [["", "Quick preset - choose one ..."], ...Object.keys(E.EXPORT_PRESETS)], "", (v) => {
       if (!v) return;
@@ -726,6 +726,15 @@ export class Studio {
     this.resBox = this.resBox || h("div", { class: "results" });
     b.append(this.expGo, this.expStop, this.expProg.el, button("Open exported videos", () => this.openOutputs(), "quiet wide"), this.resBox, this.expLog.el);
     this.updateCutInfo();
+  }
+
+  // the two controls for "first N seconds only" (shown in the Export, Silence and Dialogue panels)
+  headControls() {
+    const upd = () => { this.app.changed(); this.updateCutInfo(); this.updateSilSummary(); };
+    return [
+      checkField("Apply only to the first few seconds of every part (rest stays normal)", this.dl.head_on, (v) => { this.dl.head_on = v; upd(); }).el,
+      textField("Seconds at the start of every part", String(this.dl.head_sec), (v) => { this.dl.head_sec = Math.max(0.5, +String(v).replace(",", ".") || 3); upd(); }, { type: "number", inputmode: "decimal" }).el,
+    ];
   }
 
   // "first N seconds only": end of the part that gets cut (null = whole part)
@@ -873,6 +882,7 @@ export class Studio {
     const ch = () => this.app.changed();
     b.append(section("DIALOGUE CLEAN-UP (selected parts only)", "Works only on the ticked parts' time ranges, so it is fast. Every ticked part gets its own clean-up and is exported with it."),
       checkField("Dialogue clean-up ON (the Export tab's export button uses it)", d.on, (v) => { d.on = v; ch(); this.updateCutInfo(); }).el,
+      ...this.headControls(),
       checkField("Noise reduction (FFmpeg)", d.denoise, (v) => { d.denoise = v; ch(); }).el,
       checkField("Keep only talking (Silero AI, else built-in detector)", d.vad, (v) => { d.vad = v; ch(); }).el,
       checkField("Text editing with Whisper (word list below)", d.whisper, (v) => { d.whisper = v; ch(); }).el,

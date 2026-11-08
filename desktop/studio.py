@@ -312,6 +312,7 @@ class Studio(ctk.CTkFrame):
         self.sil_on = tk.BooleanVar(value=True)
         ctk.CTkSwitch(f, text="Cut long silent pauses (only in ticked parts)", variable=self.sil_on,
                       text_color=TEXT, command=lambda: self.update_cut_info()).pack(anchor="w", padx=10, pady=(10, 4))
+        self.head_row(f)
         ctk.CTkLabel(f, text="SETTINGS", font=ctk.CTkFont(size=13, weight="bold"), text_color=NEON).pack(
             anchor="w", padx=10, pady=(6, 2))
         self.sil_db = NumField(f, "Quiet below (dB)", -60, -20, 1, -35, "{:.0f}", self.sil_changed, label_width=150)
@@ -343,13 +344,7 @@ class Studio(ctk.CTkFrame):
                       command=self.update_cut_info).pack(anchor="w", padx=10, pady=4)
         ctk.CTkSwitch(f, text="Dialogue clean-up (keep only talking)", variable=self.dl_on, text_color=TEXT,
                       command=self.update_cut_info).pack(anchor="w", padx=10, pady=4)
-        hr = ctk.CTkFrame(f, fg_color="transparent")
-        hr.pack(fill="x", padx=10, pady=4)
-        ctk.CTkSwitch(hr, text="Apply only to the first", variable=self.head_on, text_color=TEXT,
-                      command=self.update_cut_info).pack(side="left")
-        ctk.CTkEntry(hr, width=48, textvariable=self.head_sec).pack(side="left", padx=6)
-        ctk.CTkLabel(hr, text="seconds of every part (rest stays normal)", text_color=TEXT).pack(side="left")
-        self.head_sec.trace_add("write", lambda *a: self.update_cut_info())
+        self.head_row(f)
         self.cut_info = ctk.CTkLabel(f, text="", text_color=GREY, wraplength=360, justify="left", anchor="w")
         self.cut_info.pack(fill="x", padx=10, pady=(0, 6))
         self.preset_menu = ctk.CTkOptionMenu(f, values=list(E.EXPORT_PRESETS), command=self.apply_export_preset)
@@ -391,6 +386,26 @@ class Studio(ctk.CTkFrame):
         self.exp_log = ctk.CTkTextbox(f, height=180)
         self.exp_log.pack(fill="x", padx=10, pady=(4, 10))
         self.update_cut_info()
+
+    def head_row(self, parent):
+        """'Only the first N seconds of every part' - the same two variables are shown in the Export, Silence and
+        Dialogue tabs."""
+        hr = ctk.CTkFrame(parent, fg_color="transparent")
+        hr.pack(fill="x", padx=10, pady=4)
+        ctk.CTkSwitch(hr, text="Apply only to the first", variable=self.head_on, text_color=TEXT,
+                      command=self.cut_changed).pack(side="left")
+        ctk.CTkEntry(hr, width=48, textvariable=self.head_sec).pack(side="left", padx=6)
+        ctk.CTkLabel(hr, text="seconds of every part (rest stays normal)", text_color=TEXT).pack(side="left")
+        if not getattr(self, "_head_traced", False):
+            self._head_traced = True
+            self.head_sec.trace_add("write", lambda *a: self.cut_changed())
+
+    def cut_changed(self):
+        try:
+            self.update_cut_info()
+            self.update_sil_summary()
+        except Exception:
+            pass
 
     def head_seconds(self):
         try:
@@ -442,6 +457,7 @@ class Studio(ctk.CTkFrame):
                      justify="left").pack(anchor="w", padx=10, pady=(0, 6))
         ctk.CTkSwitch(f, text="Dialogue clean-up ON (the Export tab's export button uses it)", variable=self.dl_on,
                       text_color=TEXT, command=lambda: self.update_cut_info()).pack(anchor="w", padx=10, pady=(0, 6))
+        self.head_row(f)
         self.dl_denoise = tk.BooleanVar(value=True)
         self.dl_vad = tk.BooleanVar(value=True)
         self.dl_whisper = tk.BooleanVar(value=False)
@@ -1206,8 +1222,9 @@ class Studio(ctk.CTkFrame):
             return
         removed = self.removed_seconds()
         n = len(self.sil_list)
+        scope = f" (only the first {self.head_seconds():g} s of every part)" if self.head_on.get() else ""
         self.sil_summary.configure(text=f"Found {n} silent pauses in the movie. Selected parts will lose about "
-                                        f"{removed:.1f} s of silence.")
+                                        f"{removed:.1f} s of silence{scope}.")
         self.sil_text.delete("1.0", "end")
         for a, b in self.sil_list[:400]:
             self.sil_text.insert("end", f"{tstr(a)}  to  {tstr(b)}   ({b - a:.1f}s)\n")
