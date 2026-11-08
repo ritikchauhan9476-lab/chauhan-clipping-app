@@ -11,7 +11,7 @@ ORT_VER="${ORT_VER:-1.20.1}"
 TF_VER="${TF_VER:-3.2.4}"
 
 echo "== npm packages (onnxruntime-web $ORT_VER, transformers.js $TF_VER)"
-( cd "$TMP" && npm init -y >/dev/null && npm install --no-audit --no-fund "onnxruntime-web@$ORT_VER" "@huggingface/transformers@$TF_VER" >/dev/null )
+( cd "$TMP" && npm init -y >/dev/null && npm install --ignore-scripts --no-audit --no-fund "onnxruntime-web@$ORT_VER" "@huggingface/transformers@$TF_VER" >/dev/null )
 mkdir -p "$WEB/vendor/ort" "$WEB/vendor/transformers"
 cp "$TMP/node_modules/onnxruntime-web/dist/ort.wasm.min.js" "$WEB/vendor/ort/"
 cp "$TMP/node_modules/onnxruntime-web/dist/"ort-wasm-simd-threaded.{wasm,mjs} "$WEB/vendor/ort/"
