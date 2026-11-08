@@ -1,0 +1,101 @@
+name: Build Windows portable
+
+on:
+  push:
+    branches: [main, master]
+    paths: ['desktop/**', '.github/workflows/desktop.yml']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  portable:
+    name: Windows portable zip
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Assemble the portable folder
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = "$PWD"
+          $out = "$root\dist\ChauhanClipping"
+          New-Item -ItemType Directory -Force $out | Out-Null
+
+          # 1) Python (a full copy, tkinter included) + every package
+          $pyhome = Split-Path (Get-Command python).Source
+          Copy-Item $pyhome "$out\python" -Recurse
+          $py = "$out\python\python.exe"
+          & $py -m pip install --no-warn-script-location customtkinter pillow numpy faster-whisper onnxruntime
+          if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
+          & $py -m pip install --no-warn-script-location --no-deps silero-vad
+          if ($LASTEXITCODE -ne 0) { throw "silero-vad install failed" }
+
+          # 2) the program
+          Copy-Item "$root\desktop\*.py" $out
+          Copy-Item "$root\desktop\portable\*" $out
+          Copy-Item "$root\desktop\requirements.txt" $out
+          foreach ($d in 'input_movies','exported_clips','projects') { New-Item -ItemType Directory -Force "$out\$d" | Out-Null }
+
+          # 3) FFmpeg + FFprobe
+          $urls = @(
+            'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-7.1.zip',
+            'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip')
+          $ok = $false
+          foreach ($u in $urls) {
+            try { Invoke-WebRequest $u -OutFile ff.zip -TimeoutSec 600; $ok = $true; break } catch { Write-Host "download failed: $u" }
+          }
+          if (-not $ok) { throw "FFmpeg download failed" }
+          Expand-Archive ff.zip ffx -Force
+          New-Item -ItemType Directory -Force "$out\ffmpeg" | Out-Null
+          foreach ($n in 'ffmpeg.exe','ffprobe.exe') {
+            $f = Get-ChildItem ffx -Recurse -Filter $n | Select-Object -First 1
+            Copy-Item $f.FullName "$out\ffmpeg\$n"
+          }
+
+          # 4) Whisper "small" model as plain files (no cache links)
+          & $py -c "from faster_whisper import download_model; download_model('small', output_dir=r'$out\models\whisper-small')"
+          if ($LASTEXITCODE -ne 0) { throw "Whisper model download failed" }
+          Get-ChildItem "$out\models\whisper-small" | Select-Object Name, Length | Format-Table
+
+      - name: Self check (window, switches, export, Silero, Whisper)
+        shell: pwsh
+        run: |
+          $out = "$PWD\dist\ChauhanClipping"
+          $env:PYTHONNOUSERSITE = '1'
+          & "$out\python\python.exe" "$out\selfcheck.py"
+          if ($LASTEXITCODE -ne 0) { throw "self check failed" }
+
+      - name: Make the zips
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = "$PWD\dist\ChauhanClipping"
+          Get-ChildItem $out -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+          Move-Item "$out\models" "$PWD\dist\models_tmp"
+          New-Item -ItemType Directory -Force "$PWD\dist\pack\ChauhanClipping" | Out-Null
+          Move-Item "$PWD\dist\models_tmp" "$PWD\dist\pack\ChauhanClipping\models"
+          Set-Location dist
+          7z a -tzip -mx=3 "ChauhanClipping-Windows.zip" ChauhanClipping | Out-Null
+          Set-Location pack
+          7z a -tzip -mx=1 "..\ChauhanClipping-WhisperModel-small.zip" ChauhanClipping | Out-Null
+          Set-Location ..
+          Get-ChildItem *.zip | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB)}}
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-${{ github.run_number }}
+          name: Chauhan Clipping for Windows (portable) ${{ github.run_number }}
+          make_latest: false
+          body: |
+            Windows portable version. Download ChauhanClipping-Windows.zip, extract it, double-click run.bat.
+            Optional: ChauhanClipping-WhisperModel-small.zip - extract it into the same folder (AI Clipping / text editing offline).
+          files: |
+            dist/ChauhanClipping-Windows.zip
+            dist/ChauhanClipping-WhisperModel-small.zip

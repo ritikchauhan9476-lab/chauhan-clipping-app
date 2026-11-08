@@ -1,0 +1,5 @@
+# The AI speech detector (Silero VAD through onnxruntime) is installed automatically by setup.bat / install_ai.bat:
+#   venv\Scripts\python -m pip install onnxruntime
+#   venv\Scripts\python -m pip install --no-deps silero-vad
+# (--no-deps keeps PyTorch, a 2 GB download, out of the install.) Without it a built-in detector is used.
+onnxruntime
