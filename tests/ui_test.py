@@ -146,6 +146,20 @@ def main():
         V.locator(".row", has_text="Quality (encoder").locator("select").select_option("Fast (phone)")
         V.locator(".part input[type=checkbox]").nth(0)  # parts panel not shown here
         page.evaluate("() => { const s = window.ccApp.simple; s.parts[1].on = false; s.parts[2].on = false; s.sil.on = true; }")
+        # cutting switches: both OFF = plain parts, nothing removed
+        V.locator(".check", has_text="Cut silent pauses").locator("input").uncheck()
+        assert "Both OFF" in V.locator(".panel .note", has_text="Both OFF").inner_text()
+        V.get_by_role("button", name="EXPORT SELECTED PARTS (PLAIN PARTS)").click()
+        wait_engine(page, "window.ccApp.simple.eng")
+        wait_text(page, 'section.view[data-tab="simple"] .panel .status', "Done", timeout=60)
+        plain_log = V.locator(".panel .log").inner_text()
+        assert "Saved:" in plain_log and "dialogue" not in plain_log.lower(), plain_log[-800:]
+        V.locator(".check", has_text="Dialogue clean-up (keep").locator("input").check()
+        V.get_by_role("button", name="(DIALOGUE CLEAN-UP)").wait_for(timeout=3000)
+        V.locator(".check", has_text="Dialogue clean-up (keep").locator("input").uncheck()
+        V.locator(".check", has_text="Cut silent pauses").locator("input").check()
+        V.get_by_role("button", name="(SILENCE CUT)").wait_for(timeout=3000)
+        shot(page, "08b_cut_switches")
         V.get_by_role("button", name="EXPORT SELECTED PARTS").click()
         wait_engine(page, "window.ccApp.simple.eng")
         wait_text(page, 'section.view[data-tab="simple"] .panel .status', "Done", timeout=60)

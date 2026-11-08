@@ -29,7 +29,7 @@ export class Studio {
     this.partIdx = 0; this.tRel = 0;
     this.silList = []; this.silKey = null;
     this.sil = { on: true, db: -35, min: 2.0, pad: 0.25 };
-    this.dl = { denoise: true, vad: true, whisper: false, pad: 150, minsil: 300, minpiece: D.MIN_PIECE, scan: false, remove: "um, uh", lang: "", model: "base" };
+    this.dl = { on: false, denoise: true, vad: true, whisper: false, pad: 150, minsil: 300, minpiece: D.MIN_PIECE, scan: false, remove: "um, uh", lang: "", model: "base" };
     this.range = { start: "0", end: "", count: "3", length: "0" };
     this.numStart = "1";
     this.panel = mode === "ai" ? "AI" : "Parts";
@@ -633,7 +633,7 @@ export class Studio {
   buildSilence() {
     const b = this.body, S = this.sil;
     const changed = () => { this.updateSilSummary(); this.app.changed(); };
-    b.append(checkField("Cut long silent pauses (only in ticked parts)", S.on, (v) => { S.on = v; changed(); }).el,
+    b.append(checkField("Cut long silent pauses (only in ticked parts)", S.on, (v) => { S.on = v; changed(); this.updateCutInfo(); }).el,
       section("SETTINGS"),
       new NumField("Quiet below (dB)", -60, -20, 1, S.db, { fmt: 0, onChange: (v) => { S.db = v; changed(); } }).el,
       new NumField("Silence longer than (s)", 0.5, 10, 0.5, S.min, { fmt: 1, onChange: (v) => { S.min = v; changed(); } }).el,
@@ -688,6 +688,11 @@ export class Studio {
   buildExport() {
     const b = this.body, c = this.cfg;
     const set = (k) => (v) => { c[k] = v; this.app.changed(); this.showPanel("Export"); };
+    this.cutInfo = h("div", { class: "note" });
+    b.append(section("CUTTING (ON / OFF)"),
+      checkField("Cut silent pauses", this.sil.on, (v) => { this.sil.on = v; this.app.changed(); this.updateCutInfo(); }).el,
+      checkField("Dialogue clean-up (keep only talking)", this.dl.on, (v) => { this.dl.on = v; this.app.changed(); this.updateCutInfo(); }).el,
+      this.cutInfo);
     b.append(selectField("Quick preset", [["", "Quick preset - choose one ..."], ...Object.keys(E.EXPORT_PRESETS)], "", (v) => {
       if (!v) return;
       Object.assign(c, E.EXPORT_PRESETS[v]);
@@ -710,13 +715,24 @@ export class Studio {
       section("PREVIEW (see your edit before exporting)"),
       button("Play selected part with sound", () => this.playPreview(false), "wide"),
       button("Play whole edit (all ticked parts)", () => this.playPreview(true), "wide"));
-    this.expGo = button("EXPORT SELECTED PARTS", () => this.export(false), "primary big wide");
+    this.expGo = button("EXPORT SELECTED PARTS", () => this.export(), "primary big wide");
     this.expStop = button("Stop", () => this.eng && this.eng.stop(), "danger wide");
     this.expGo.disabled = !!this.eng; this.expStop.disabled = !this.eng;
     this.expProg = this.expProg || new Progress();
     this.expLog = this.expLog || new LogBox(160);
     this.resBox = this.resBox || h("div", { class: "results" });
     b.append(this.expGo, this.expStop, this.expProg.el, button("Open exported videos", () => this.openOutputs(), "quiet wide"), this.resBox, this.expLog.el);
+    this.updateCutInfo();
+  }
+
+  // what the export button will do with the two switches
+  updateCutInfo() {
+    const dl = !!this.dl.on, sl = !!this.sil.on;
+    if (this.cutInfo) this.cutInfo.textContent = dl
+      ? "Dialogue clean-up is ON: only the talking is kept in every ticked part (silence and pauses are removed)."
+      : sl ? "Silence cut is ON: long silent pauses are removed from the ticked parts (parts with 'cut silence' ticked)."
+        : "Both OFF: the movie is only converted into parts. Nothing is removed - no silence, no dialogue cut.";
+    if (this.expGo) this.expGo.textContent = "EXPORT SELECTED PARTS" + (dl ? " (DIALOGUE CLEAN-UP)" : sl ? " (SILENCE CUT)" : " (PLAIN PARTS)");
   }
 
   outDir(withDialogue) {
@@ -743,6 +759,7 @@ export class Studio {
   }
 
   async export(withDialogue) {
+    if (withDialogue === undefined || withDialogue === null) withDialogue = !!this.dl.on;
     if (!this.movie) return alertBox("Please choose a video first.");
     if (this.eng) return;
     const chosen = this.parts.map((p, i) => [i, p]).filter(([, p]) => p.on);
@@ -833,6 +850,7 @@ export class Studio {
     const b = this.body, d = this.dl;
     const ch = () => this.app.changed();
     b.append(section("DIALOGUE CLEAN-UP (selected parts only)", "Works only on the ticked parts' time ranges, so it is fast. Every ticked part gets its own clean-up and is exported with it."),
+      checkField("Dialogue clean-up ON (the Export tab's export button uses it)", d.on, (v) => { d.on = v; ch(); this.updateCutInfo(); }).el,
       checkField("Noise reduction (FFmpeg)", d.denoise, (v) => { d.denoise = v; ch(); }).el,
       checkField("Keep only talking (Silero AI, else built-in detector)", d.vad, (v) => { d.vad = v; ch(); }).el,
       checkField("Text editing with Whisper (word list below)", d.whisper, (v) => { d.whisper = v; ch(); }).el,
@@ -1000,7 +1018,7 @@ export class Studio {
       parts: JSON.parse(JSON.stringify(this.parts)), part_idx: this.partIdx, t_rel: Math.round(this.tRel * 1000) / 1000, sel: this.sel,
       num_start: this.numStart,
       silence: { on: this.sil.on, db: +this.sil.db, min: +this.sil.min, pad: +this.sil.pad, key: this.silKey, list: this.silList },
-      dialogue: { denoise: this.dl.denoise, vad: this.dl.vad, whisper: this.dl.whisper, pad: +this.dl.pad, minsil: +this.dl.minsil,
+      dialogue: { on: !!this.dl.on, denoise: this.dl.denoise, vad: this.dl.vad, whisper: this.dl.whisper, pad: +this.dl.pad, minsil: +this.dl.minsil,
         remove: this.dl.remove, lang: this.dl.lang, minpiece: +this.dl.minpiece, scan: this.dl.scan, model: this.dl.model },
       right_tab: this.panel,
     };
@@ -1032,7 +1050,7 @@ export class Studio {
     });
     await step("dialogue", () => {
       const d = st.dialogue || {};
-      this.dl = { denoise: d.denoise ?? true, vad: d.vad ?? true, whisper: !!d.whisper, pad: +(d.pad ?? 150), minsil: +(d.minsil ?? 300),
+      this.dl = { on: !!d.on, denoise: d.denoise ?? true, vad: d.vad ?? true, whisper: !!d.whisper, pad: +(d.pad ?? 150), minsil: +(d.minsil ?? 300),
         minpiece: +(d.minpiece ?? D.MIN_PIECE), scan: !!d.scan, remove: String(d.remove ?? "um, uh"), lang: String(d.lang ?? ""), model: d.model || "base" };
     });
     await step("position", () => {
