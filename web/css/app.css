@@ -130,3 +130,18 @@ input[type=range] { width: 100%; accent-color: var(--neon); height: 28px; }
 .welcome { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: #000; z-index: 80; display: flex; flex-direction: column; justify-content: center; gap: 16px; padding: 28px; text-align: center; }
 .welcome .logo { color: var(--neon); font-weight: 900; font-size: 24px; letter-spacing: .1em; }
 .fatal { color: #ff8080; white-space: pre-wrap; padding: 16px; }
+
+/* colour: modes, precision rows, drag pad */
+.cmodes { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 6px; }
+.pfield { margin-bottom: 8px; }
+.prow { display: grid; grid-template-columns: auto auto 1fr auto auto; gap: 5px; align-items: center; }
+.prow .btn { min-width: 44px; padding: 6px 4px; }
+.prow input.fine { min-width: 0; }
+.cchips { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0 8px; scrollbar-width: none; }
+.cchips::-webkit-scrollbar { display: none; }
+.cd-pad { touch-action: none; user-select: none; height: 190px; border: 1px dashed var(--neon); border-radius: 14px; background: #0a0f0a; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; margin-bottom: 8px; }
+.cd-name { font-size: 15px; color: var(--grey); letter-spacing: .08em; text-transform: uppercase; }
+.cd-val { font-size: 54px; font-weight: 800; color: var(--neon); line-height: 1.05; }
+.cd-hint { font-size: 12px; color: var(--grey); text-align: center; padding: 0 12px; }
+.cd-hud { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); background: rgba(0,0,0,.72); color: var(--neon); border: 1px solid var(--neon); border-radius: 999px; padding: 4px 14px; font-weight: 700; pointer-events: none; opacity: 0; transition: opacity .15s; white-space: nowrap; }
+.cd-hud.show { opacity: 1; }

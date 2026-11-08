@@ -74,6 +74,35 @@ def main():
         nf.fill("50"); nf.dispatch_event("change")
         time.sleep(2.5)
         shot(page, "04_colour")
+        # precision mode: fine slider + step buttons
+        V.get_by_role("button", name="Precision slider").click()
+        row = V.locator(".pfield", has_text="Exposure")
+        before = float(row.locator("input.num").input_value())
+        row.get_by_role("button", name="+0.1").click()
+        row.get_by_role("button", name="+1").click()
+        after = float(row.locator("input.num").input_value())
+        assert abs(after - (before + 1.1)) < 0.06, (before, after)
+        shot(page, "04b_precision")
+        n = row.locator("input.num"); n.fill("40"); n.dispatch_event("change")
+        # drag mode: drag right on the pad changes the selected control, drag down selects the next one
+        V.get_by_role("button", name="Drag to adjust").click()
+        V.locator(".cchips .chip", has_text="Temperature").click()
+        pad = V.locator(".cd-pad")
+        bb = pad.bounding_box()
+        cx, cy = bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2
+        page.mouse.move(cx, cy); page.mouse.down(); page.mouse.move(cx + 60, cy, steps=6); page.mouse.up()
+        v1 = V.locator(".cd-val").inner_text()
+        assert v1.startswith("+") and int(v1) > 10, v1
+        page.mouse.move(cx, cy); page.mouse.down(); page.mouse.move(cx, cy + 40, steps=6); page.mouse.up()
+        assert V.locator(".cd-name").inner_text().lower().startswith("tint"), V.locator(".cd-name").inner_text()
+        # drag directly on the preview picture
+        cv = V.locator("canvas.preview-canvas").bounding_box()
+        px, py = cv["x"] + cv["width"] / 2, cv["y"] + cv["height"] / 2
+        page.mouse.move(px, py); page.mouse.down(); page.mouse.move(px - 50, py, steps=6); page.mouse.up()
+        v2 = V.locator(".cd-val").inner_text()
+        assert v2.startswith("-"), v2
+        shot(page, "04c_drag")
+        V.get_by_role("button", name="Sliders").click()
         # crop: 9:16 blur
         V.locator(".chip", has_text="Crop").click()
         V.locator(".row", has_text="Output ratio").locator("select").select_option("9:16")

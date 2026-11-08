@@ -264,8 +264,8 @@ export function smoothPieces(regs, total, minPiece = MIN_PIECE) {
 export async function sceneCuts(movie, start, end, thr = SCENE_THR, job = null) {
   let crop = null;
   try { crop = await E.detectCrop(movie, (await E.probeInfo(movie)).duration); } catch (e) { crop = null; }
-  const vf = (crop ? crop + "," : "") + `scale=160:-2,select='gt(scene,${thr})',showinfo`;
-  const r = await E.ffrun(["-nostdin", "-hide_banner", "-v", "info", "-ss", start.toFixed(3), "-t", Math.max(0.1, end - start).toFixed(3),
+  const vf = (crop ? crop + "," : "") + `scale=160:-2:flags=fast_bilinear,select='gt(scene,${thr})',showinfo`;
+  const r = await E.ffrun(["-nostdin", "-hide_banner", "-v", "info", "-skip_frame", "noref", "-ss", start.toFixed(3), "-t", Math.max(0.1, end - start).toFixed(3),
     "-i", movie, "-an", "-sn", "-vf", vf, "-f", "null", "-"], { job });
   return [...String(r.stderr).matchAll(/pts_time:([0-9.]+)/g)].map((m) => start + parseFloat(m[1])).sort((a, b) => a - b);
 }

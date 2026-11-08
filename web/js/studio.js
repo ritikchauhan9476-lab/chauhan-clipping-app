@@ -15,7 +15,7 @@ import {
   alertBox, confirmBox, promptBox, toast,
 } from "./ui.js";
 
-export const ENCODE_KEYS = ["resolution", "fps", "codec", "quality", "rate_mode", "bitrate", "audio_bitrate"];
+export const ENCODE_KEYS = ["resolution", "fps", "codec", "x264_preset", "quality", "rate_mode", "bitrate", "audio_bitrate"];
 
 export class Studio {
   constructor(app, mode) {
@@ -301,17 +301,156 @@ export class Studio {
   // ================================================================ colour
   buildColour() {
     const b = this.body;
-    b.append(section("COLOUR CORRECTION (live preview)", "Every control goes from -100 to +100 (0 = no change). Drag the slider or type a number. Double-tap a name to reset that control."));
+    if (!this.colourMode) {
+      let m = "slider";
+      try { m = localStorage.getItem("cc_colour_mode") || "slider"; } catch (e) { /* no storage */ }
+      this.colourMode = ["slider", "precision", "drag"].includes(m) ? m : "slider";
+    }
+    const modes = [["slider", "Sliders"], ["precision", "Precision slider"], ["drag", "Drag to adjust"]];
+    b.append(h("div", { class: "cmodes" }, ...modes.map(([id, name]) => h("button", {
+      class: "chip" + (this.colourMode === id ? " on" : ""), type: "button",
+      onclick: () => { this.colourMode = id; try { localStorage.setItem("cc_colour_mode", id); } catch (e) { /* ignore */ } this.showPanel("Colour"); },
+    }, name))));
+    const help = {
+      slider: "Every control goes from -100 to +100 (0 = no change). Drag the slider or type a number. Double-tap a name to reset that control.",
+      precision: "Precision mode: each control has a fine slider (covers +/-10 around the value, steps of 0.1) and -1 / -0.1 / +0.1 / +1 buttons for exact values. Double-tap a name to reset.",
+      drag: "Drag to adjust: pick a control below, then drag LEFT / RIGHT on the picture or on the pad to change it. Drag UP / DOWN to switch to the next control. Double-tap = reset the control. 'Fine drag' makes it slower and more exact.",
+    }[this.colourMode];
+    b.append(section("COLOUR CORRECTION (live preview)", help));
     this.colourFields = {};
-    for (const [sec, items] of CL.LAYOUT) {
-      b.append(h("div", { class: "sub-title" }, sec));
-      for (const [key, label] of items) {
-        const nf = new NumField(label, -100, 100, 1, CL.toUi(key, this.cfg[key]), { fmt: 0, def: 0, onChange: (v) => { this.cfg[key] = CL.toCfg(key, v); this.scheduleRender(); this.app.changed(); } });
-        this.colourFields[key] = nf;
-        b.append(nf.el);
+    if (this.colourMode === "drag") this.buildColourDrag(b);
+    else {
+      for (const [sec, items] of CL.LAYOUT) {
+        b.append(h("div", { class: "sub-title" }, sec));
+        for (const [key, label] of items) b.append(this.colourMode === "precision" ? this.precisionRow(key, label) : this.sliderRow(key, label));
       }
     }
-    b.append(button("Reset all colour", () => { for (const nf of Object.values(this.colourFields)) nf.set(0, true); }, "quiet wide"));
+    b.append(button("Reset all colour", () => {
+      for (const k of CL.KEYS) this.cfg[k] = CL.NEUTRAL[k];
+      this.scheduleRender(); this.app.changed(); this.showPanel("Colour");
+    }, "quiet wide"));
+  }
+
+  colourUi(key) { return CL.toUi(key, this.cfg[key]); }
+  setColourUi(key, v, dec = 0) {
+    const f = 10 ** dec;
+    v = Math.max(-100, Math.min(100, Math.round(v * f) / f));
+    this.cfg[key] = CL.toCfg(key, v);
+    this.scheduleRender(); this.app.changed();
+    return v;
+  }
+
+  sliderRow(key, label) {
+    const nf = new NumField(label, -100, 100, 1, this.colourUi(key), { fmt: 0, def: 0, onChange: (v) => { this.cfg[key] = CL.toCfg(key, v); this.scheduleRender(); this.app.changed(); } });
+    this.colourFields[key] = nf;
+    return nf.el;
+  }
+
+  // slider + fine slider (+/-10 around the value, 0.1 steps) + exact step buttons
+  precisionRow(key, label) {
+    let dragging = false;
+    const fine = h("input", { type: "range", step: 0.1, class: "fine" });
+    const sync = (v, skipFine) => {
+      nf.set(v);
+      if (skipFine) return;
+      fine.min = Math.max(-100, v - 10); fine.max = Math.min(100, v + 10); fine.value = v;
+    };
+    const apply = (v) => { v = this.setColourUi(key, v, 1); sync(v, dragging); };
+    const nf = new NumField(label, -100, 100, 0.1, this.colourUi(key), { fmt: 1, def: 0, onChange: (v) => apply(v) });
+    this.colourFields[key] = nf;
+    fine.addEventListener("input", () => { dragging = true; const v = this.setColourUi(key, +fine.value, 1); nf.set(v); });
+    fine.addEventListener("change", () => { dragging = false; sync(this.colourUi(key)); });
+    const step = (d) => button(d > 0 ? "+" + d : String(d).replace("-", "\u2212"), () => apply(this.colourUi(key) + d), "small quiet");
+    const row = h("div", { class: "prow" }, step(-1), step(-0.1), fine, step(0.1), step(1));
+    sync(this.colourUi(key));
+    return h("div", { class: "pfield" }, nf.el, row);
+  }
+
+  buildColourDrag(b) {
+    const keys = CL.KEYS;
+    const names = Object.fromEntries(CL.LAYOUT.flatMap(([, items]) => items));
+    if (!keys.includes(this.colourSel)) this.colourSel = keys[0];
+    const fmtv = (v) => (Math.abs(v) < 0.05 ? "0" : (v > 0 ? "+" : "") + (Math.abs(v - Math.round(v)) < 0.05 ? Math.round(v) : v.toFixed(1)));
+    const chipEls = {};
+    const row = h("div", { class: "cchips" });
+    for (const k of keys) {
+      const c = h("button", { class: "chip", type: "button", onclick: () => { this.colourSel = k; refresh(); } });
+      chipEls[k] = c; row.append(c);
+    }
+    const title = h("div", { class: "cd-name" });
+    const val = h("div", { class: "cd-val" });
+    const hint = h("div", { class: "cd-hint" }, "\u2194 drag = change value    \u2195 drag = next / previous control");
+    const pad = h("div", { class: "cd-pad" }, title, val, hint);
+    const fineBox = checkField("Fine drag (slower, 0.1 steps)", !!this.colourFine, (v) => { this.colourFine = v; });
+    const refresh = () => {
+      for (const k of keys) {
+        chipEls[k].textContent = `${names[k]} ${fmtv(this.colourUi(k))}`;
+        chipEls[k].classList.toggle("on", k === this.colourSel);
+      }
+      title.textContent = names[this.colourSel];
+      val.textContent = fmtv(this.colourUi(this.colourSel));
+      const on = chipEls[this.colourSel];
+      if (on && on.scrollIntoView) on.scrollIntoView({ block: "nearest", inline: "center" });
+    };
+    this.colourRefresh = refresh;
+    refresh();
+    b.append(row, pad, fineBox.el);
+    this.bindColourDrag(pad);
+    b.append(note("Tip: you can also drag directly on the picture above."));
+  }
+
+  // finger gestures for 'Drag to adjust'. Works on the pad and on the preview picture.
+  bindColourDrag(el) {
+    let g = null, lastTap = 0;
+    const keys = CL.KEYS;
+    const hud = () => {
+      if (!this.hud) return;
+      const k = this.colourSel, v = this.colourUi(k);
+      const names = Object.fromEntries(CL.LAYOUT.flatMap(([, items]) => items));
+      this.hud.textContent = `${names[k]}  ${Math.abs(v) < 0.05 ? "0" : (v > 0 ? "+" : "") + (Math.abs(v - Math.round(v)) < 0.05 ? Math.round(v) : v.toFixed(1))}`;
+      this.hud.classList.add("show");
+      clearTimeout(this.hudTimer);
+      this.hudTimer = setTimeout(() => this.hud.classList.remove("show"), 900);
+    };
+    const active = () => this.panel === "Colour" && this.colourMode === "drag" && this.colourRefresh;
+    el.addEventListener("pointerdown", (e) => {
+      if (!active()) return;
+      if (this.pickMode) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      try { el.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      if (!keys.includes(this.colourSel)) this.colourSel = keys[0];
+      g = { x: e.clientX, y: e.clientY, axis: null, base: this.colourUi(this.colourSel), idx: keys.indexOf(this.colourSel), w: el.getBoundingClientRect().width, moved: false };
+    }, true);
+    el.addEventListener("pointermove", (e) => {
+      if (!g) return;
+      const dx = e.clientX - g.x, dy = e.clientY - g.y;
+      if (!g.axis && Math.max(Math.abs(dx), Math.abs(dy)) > 8) g.axis = Math.abs(dx) >= Math.abs(dy) ? "h" : "v";
+      if (!g.axis) return;
+      g.moved = true;
+      e.preventDefault();
+      if (g.axis === "h") {
+        const fine = !!this.colourFine;
+        const perPx = (200 / Math.max(g.w, 320)) * (fine ? 0.1 : 1);
+        this.setColourUi(this.colourSel, g.base + dx * perPx, fine ? 1 : 0);
+      } else {
+        const i = Math.max(0, Math.min(keys.length - 1, g.idx + Math.round(dy / 34)));
+        if (keys[i] !== this.colourSel) { this.colourSel = keys[i]; g.base = this.colourUi(keys[i]); }
+      }
+      this.colourRefresh();
+      hud();
+    });
+    const up = () => {
+      if (!g) return;
+      const tap = !g.moved;
+      g = null;
+      if (tap) {
+        const now = Date.now();
+        if (now - lastTap < 350) { this.setColourUi(this.colourSel, 0); this.colourRefresh(); hud(); lastTap = 0; }
+        else lastTap = now;
+      }
+    };
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
   }
 
   // ================================================================ items (overlay / text / music)
@@ -561,6 +700,7 @@ export class Studio {
       selectField("Resolution (short side)", E.RES, c.resolution, set("resolution")).el,
       selectField("Frame rate", E.FPS, c.fps, set("fps")).el,
       selectField("Codec", E.CODECS, c.codec, set("codec")).el,
+      selectField("Encoding speed (CPU) - faster = quicker export", E.X264_PRESETS, c.x264_preset, set("x264_preset")).el,
       selectField("Quality (encoder speed / detail)", Object.keys(E.QUALITY), c.quality, set("quality")).el,
       selectField("Bitrate mode", E.RATE_MODES, c.rate_mode, set("rate_mode")).el,
       selectField("Bitrate (kbps)", brOpts.map((x) => [x, `${x} kbps (${(+x / 1000).toFixed(1)} Mbps)`]), String(c.bitrate), (v) => { c.bitrate = +v; this.app.changed(); }).el,
@@ -768,6 +908,9 @@ export class Studio {
 
   bindStage() {
     const cv = this.cv;
+    this.hud = h("div", { class: "cd-hud" });
+    if (cv.parentElement) cv.parentElement.append(this.hud);
+    this.bindColourDrag(cv);
     const toFrame = (e) => {
       const r = cv.getBoundingClientRect();
       return [((e.clientX - r.left) / r.width) * cv.width, ((e.clientY - r.top) / r.height) * cv.height, r];

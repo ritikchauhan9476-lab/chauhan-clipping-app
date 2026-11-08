@@ -22,6 +22,7 @@ export const BITRATES = ["2000", "3000", "4000", "6000", "8000", "12000", "16000
   "40000", "50000", "60000", "80000", "100000", "150000"];
 export const MAX_BITRATE = 150000;
 export const RATE_MODES = ["Exact bitrate (use my number)", "Quality (bitrate is only a limit)"];
+export const X264_PRESETS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"];
 export const QUALITY = {
   High: { crf: 18, x264: "slow" },
   Balanced: { crf: 21, x264: "medium" },
@@ -32,7 +33,7 @@ export const EXPORT_PRESETS = {
   "Reels / Shorts - best quality (1080p, 12 Mbps)": { resolution: "1080p", fps: "Original", quality: "High", rate_mode: RATE_MODES[0], bitrate: 12000, audio_bitrate: "192k" },
   "YouTube 1080p (16 Mbps)": { resolution: "1080p", fps: "Original", quality: "High", rate_mode: RATE_MODES[0], bitrate: 16000, audio_bitrate: "192k" },
   "Small file for WhatsApp (720p, 3 Mbps)": { resolution: "720p", fps: "Original", quality: "Balanced", rate_mode: RATE_MODES[0], bitrate: 3000, audio_bitrate: "128k" },
-  "Fast phone export (1080p, 10 Mbps)": { resolution: "1080p", fps: "Original", quality: "Fast (phone)", rate_mode: RATE_MODES[0], bitrate: 10000, audio_bitrate: "192k", codec: CODECS[0] },
+  "Fast phone export (1080p, 10 Mbps)": { resolution: "1080p", fps: "Original", quality: "Fast (phone)", rate_mode: RATE_MODES[0], bitrate: 10000, audio_bitrate: "192k", codec: CODECS[2], x264_preset: "ultrafast" },
 };
 export const MUSIC_MODES = ["Mix with original audio", "Replace original audio"];
 export const BG_TYPES = ["Color", "Image", "Video"];
@@ -63,11 +64,11 @@ export const DEFAULTS = {
   chroma_bg_type: "Color", chroma_bg_color: "#1E1E1E", chroma_bg_file: "",
   overlays: [], texts: [], audios: [],
   music_mode: "Mix with original audio", orig_volume: 100,
-  codec: CODECS[0], quality: "High", bitrate: 20000, audio_bitrate: "192k", rate_mode: RATE_MODES[0],
+  codec: CODECS[2], x264_preset: "veryfast", quality: "High", bitrate: 20000, audio_bitrate: "192k", rate_mode: RATE_MODES[0],
   fade_sec: 0.15,
 };
 const CHOICES = {
-  src_aspect: ASPECTS, aspect: ASPECTS, fit_mode: FIT_MODES, resolution: RES, fps: FPS, codec: CODECS,
+  src_aspect: ASPECTS, aspect: ASPECTS, fit_mode: FIT_MODES, resolution: RES, fps: FPS, codec: CODECS, x264_preset: X264_PRESETS,
   rate_mode: RATE_MODES, audio_bitrate: ABR, focus: FOCUS, language: LANGS, whisper_model: WHISPER,
   music_mode: MUSIC_MODES, chroma_bg_type: BG_TYPES, quality: Object.keys(QUALITY),
 };
@@ -246,7 +247,7 @@ export function encoderArgs(s, codec = null) {
     const rc = exact
       ? ["-b:v", `${br}k`, "-minrate", `${br}k`, "-maxrate", `${br}k`, "-bufsize", `${br * 2}k`, "-x264-params", "nal-hrd=cbr"]
       : ["-crf", String(q.crf), ...cap];
-    v = ["-c:v", "libx264", "-preset", q.x264, ...rc, "-profile:v", "high"];
+    v = ["-c:v", "libx264", "-preset", X264_PRESETS.includes(s.x264_preset) ? s.x264_preset : q.x264, ...rc, "-profile:v", "high"];
   }
   if (String(s.fps) !== "Original") v.push("-r", String(s.fps));
   return [...v, "-c:a", "aac", "-b:a", s.audio_bitrate, "-ac", "2"];
@@ -396,7 +397,8 @@ export async function buildCommand(movie, start, dur, out, sIn, info, { crop = n
       const n = st.n + 1;
       const amt = Math.max(2, Math.min(Math.round(+s.blur_amount), Math.floor(Math.min(OW, OH) / 4)));
       fl.push(`${st.cur}split=2[ga${n}][gb${n}]`);
-      fl.push(`[ga${n}]scale=${OW}:${OH}:force_original_aspect_ratio=increase,crop=${OW}:${OH},boxblur=${amt}:3[gk${n}]`);
+      const bw = Math.max(16, ev(OW / 4)), bh = Math.max(16, ev(OH / 4)), amt4 = Math.max(1, Math.round(amt / 4));
+      fl.push(`[ga${n}]scale=${bw}:${bh}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=${bw}:${bh},boxblur=${amt4}:2,scale=${OW}:${OH}:flags=bilinear[gk${n}]`);
       fl.push(`[gb${n}]scale=${fw}:${fh}:flags=lanczos[gf${n}]`);
       const lab = newlab();
       fl.push(`[gk${n}][gf${n}]overlay=(W-w)/2:(H-h)*${fy}${lab}`);
@@ -520,6 +522,8 @@ export async function videoKbps(path) {
 
 // once a phone's hardware encoder has missed the bitrate, the CPU encoder is used directly for the rest of the session
 let hardwareWeak = false;
+// the phone's hardware encoder could not start at all (FFmpeg runs as its own process on Android and often cannot reach the video chip): the CPU encoder is used directly from then on
+let hardwareBroken = false;
 
 // ------------------------------------------------------------------ runners
 export class Runner {
@@ -557,10 +561,11 @@ export class Runner {
       for (const t of tmp) bridge().remove(t);
       return [r.code === 0, err || r.stderr || ""];
     };
-    const first = hardwareWeak && isHardware(S.codec) && String(S.rate_mode).startsWith("Exact") ? "H.264 (CPU)" : S.codec;
+    const first = isHardware(S.codec) && (hardwareBroken || (hardwareWeak && String(S.rate_mode).startsWith("Exact"))) ? "H.264 (CPU)" : S.codec;
     let [ok, err] = await run(first);
     if (!ok && !this.stopFlag && isHardware(first)) {
-      this.log("Phone hardware encoder failed, retrying with the CPU encoder (libx264)...");
+      this.log("Phone hardware encoder is not available here - using the CPU encoder (fast x264) for all exports.");
+      hardwareBroken = true;
       [ok, err] = await run("H.264 (CPU)");
     } else if (ok && !this.stopFlag && isHardware(first) && !S._fast && String(S.rate_mode).startsWith("Exact")) {
       // some phones' video chips ignore the bitrate: then the clip is made again with x264, which always obeys it
