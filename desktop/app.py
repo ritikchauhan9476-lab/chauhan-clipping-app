@@ -1090,7 +1090,9 @@ class App(ctk.CTk):
     def refresh_project_label(self):
         name = PRJ.title_of(self.project_path)
         star = " *" if self.dirty else ""
-        self.proj_lbl.configure(text=name + star + (f"     {self.project_path}" if self.project_path else ""))
+        def mid(t, n):
+            return t if len(t) <= n else t[: n // 2 - 1] + "..." + t[-(n // 2 - 2):]
+        self.proj_lbl.configure(text=mid(name, 48) + star + (f"     {mid(self.project_path, 60)}" if self.project_path else ""))
         self.title(f"{APP_NAME} - {name}{star}")
 
     def note(self, text):

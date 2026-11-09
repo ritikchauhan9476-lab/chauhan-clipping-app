@@ -64,6 +64,10 @@ def t_window():
             continue
         if t:
             texts[t] = x
+    # a very long project name and a long hint must not push any button out
+    w.proj_lbl.configure(text="Immortal.2026.1080p.AMZN.WEB-DL.HIN-TAM-TEL-KAN-MAL.DDP5.1.H.264-JeRi.mkv     D:/zoya/Immortal.2026.1080p.AMZN.WEB-DL.HIN-TAM-TEL-KAN-MAL.DDP5.1.H.264-JeRi.mkv.ccproj" * 2)
+    w.proj_note.configure(text="Saved: D:/zoya/Immortal.2026.1080p.AMZN.WEB-DL.HIN-TAM-TEL-KAN-MAL.ccproj")
+    w.update_idletasks(); w.update()
     for label in ("New project", "Open  (Ctrl+O)", "Save  (Ctrl+S)", "Save as"):
         x = texts.get(label)
         assert x is not None, f"project bar button missing: {label}"
