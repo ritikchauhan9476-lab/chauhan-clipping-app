@@ -53,6 +53,22 @@ def t_window():
         yield x
         for c in x.winfo_children():
             yield from walk(c)
+    # the project bar: New project / Open / Save / Save as must be on screen (not cut off) at the smallest window size
+    w.geometry("1200x760"); w.update_idletasks(); w.update()
+    bar = w.project_bar
+    texts = {}
+    for x in walk(bar):
+        try:
+            t = x.cget("text")
+        except Exception:
+            continue
+        if t:
+            texts[t] = x
+    for label in ("New project", "Open  (Ctrl+O)", "Save  (Ctrl+S)", "Save as"):
+        x = texts.get(label)
+        assert x is not None, f"project bar button missing: {label}"
+        assert x.winfo_ismapped() and x.winfo_x() + x.winfo_width() <= bar.winfo_width() + 2 and x.winfo_width() > 30, \
+            f"project bar button cut off: {label} x={x.winfo_x()} w={x.winfo_width()} bar={bar.winfo_width()}"
     studios = [x for x in walk(w) if isinstance(x, S.Studio)]
     assert studios, "no Simple Edit / AI studio found"
     for st in studios:

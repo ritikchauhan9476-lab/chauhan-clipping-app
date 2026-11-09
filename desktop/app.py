@@ -986,17 +986,17 @@ class App(ctk.CTk):
     def build_project_bar(self):
         bar = ctk.CTkFrame(self, corner_radius=10)
         bar.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 0))
+        # the buttons are packed FIRST: when the window is narrow (or Windows scaling is high) the tk packer cuts off the
+        # widgets packed last, so the long project name / hints give way - never New project / Open / Save.
+        for text, cmd, w in (("New project", self.project_new, 110), ("Open  (Ctrl+O)", self.project_open, 120),
+                             ("Save  (Ctrl+S)", self.project_save, 120), ("Save as", self.project_save_as, 80)):
+            ctk.CTkButton(bar, text=text, width=w, height=30, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
+                          command=self.guard(cmd, text.split("  ")[0])).pack(side="right", padx=3, pady=6)
         ctk.CTkLabel(bar, text="PROJECT", text_color=NEON, font=ctk.CTkFont(size=12, weight="bold")).pack(
             side="left", padx=(12, 6), pady=6)
         self.proj_lbl = ctk.CTkLabel(bar, text="Untitled", text_color=TEXT, anchor="w")
         self.proj_lbl.pack(side="left", padx=4)
-        self.proj_note = ctk.CTkLabel(bar, text="", text_color=GREY, anchor="w")
-        self.proj_note.pack(side="left", padx=10)
-        for text, cmd, w in (("Save as", self.project_save_as, 80), ("Save  (Ctrl+S)", self.project_save, 120),
-                             ("Open  (Ctrl+O)", self.project_open, 120), ("New project", self.project_new, 100)):
-            ctk.CTkButton(bar, text=text, width=w, height=30, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
-                          command=self.guard(cmd, text.split("  ")[0])).pack(side="right", padx=3, pady=6)
-        self.recent_menu = ctk.CTkOptionMenu(bar, values=["(none yet)"], width=170, height=30, fg_color=QUIET,
+        self.recent_menu = ctk.CTkOptionMenu(bar, values=["(none yet)"], width=150, height=30, fg_color=QUIET,
                                              button_color=QUIET_H, text_color=TEXT,
                                              command=self.guard1(self.open_recent, "Open recent"))
         self.recent_menu.set("Recent projects")
@@ -1005,6 +1005,9 @@ class App(ctk.CTk):
         self.reopen_var = tk.BooleanVar(value=bool(self.prefs.get("reopen_last", True)))
         ctk.CTkCheckBox(bar, text="Open the last project at start", variable=self.reopen_var,
                         text_color=TEXT, command=self.save_prefs).pack(side="right", padx=10)
+        self.proj_note = ctk.CTkLabel(bar, text="", text_color=GREY, anchor="w")
+        self.proj_note.pack(side="left", padx=10)
+        self.project_bar = bar
 
     # ---- every project action runs through a guard, so a problem is always shown (never silent)
     def guard(self, fn, what):
