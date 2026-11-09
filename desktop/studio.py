@@ -1184,7 +1184,23 @@ class Studio(ctk.CTkFrame):
 
     # ================================================================ silence
     def scan_key(self):
-        return (self.movie, round(float(self.sil_db.get()), 1), round(float(self.sil_min.get()), 2))
+        base = (self.movie, round(float(self.sil_db.get()), 1), round(float(self.sil_min.get()), 2))
+        if not self.head_on.get():
+            return base
+        return base + (round(self.head_seconds(), 2), repr(self.head_windows()))
+
+    def head_windows(self):
+        """'First N seconds only': just these stretches of the movie (start of every ticked part + a little margin)
+        need the silence scan - so the whole movie is never read."""
+        h = self.head_seconds() + 1.0
+        w = sorted((round(p["start"], 3), round(min(p["end"], p["start"] + h), 3)) for p in self.parts if p["on"] and p["sil"])
+        merged = []
+        for a, b in w:
+            if merged and a <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+            else:
+                merged.append((a, b))
+        return merged
 
     def sil_changed(self, _=None):
         self.sil_key = None
@@ -1200,13 +1216,14 @@ class Studio(ctk.CTkFrame):
             return
         key = self.scan_key()
         self.sil_then = then
-        self.sil_summary.configure(text="Scanning audio (fast mode)...")
+        self.sil_summary.configure(text="Scanning audio of the first seconds of each part ..." if self.head_on.get() else "Scanning audio (fast mode)...")
         movie, dur = self.movie, self.dur
         noise, mn = float(self.sil_db.get()), float(self.sil_min.get())
+        windows = self.head_windows() if self.head_on.get() else None
 
         def work():
             try:
-                self.q.put(("scan", (key, E.detect_silence(movie, noise, mn, dur), None)))
+                self.q.put(("scan", (key, E.detect_silence(movie, noise, mn, dur, windows), None)))
             except Exception as e:
                 self.q.put(("scan", (key, None, str(e))))
         threading.Thread(target=work, daemon=True).start()
@@ -1651,7 +1668,7 @@ class Studio(ctk.CTkFrame):
         self.sil_list, self.sil_key = [], None
         if self.movie and sl.get("key") and sl.get("list") is not None:
             key = tuple(sl["key"])
-            if len(key) == 3 and key == self.scan_key():          # the scan still matches this movie and settings
+            if key == self.scan_key():          # the scan still matches this movie and settings
                 self.sil_list, self.sil_key = [tuple(x) for x in sl["list"]], key
         self.update_sil_summary()
 

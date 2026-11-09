@@ -607,18 +607,26 @@ export function makeRanges(a, b, part, minLast) {
 }
 
 // ------------------------------------------------------------------ silence
-export async function detectSilence(path, noiseDb = -35, minSec = 2, dur = null, job = null) {
-  const r = await ffrun(["-nostdin", "-hide_banner", "-v", "info", "-i", path, "-vn", "-af",
-    `aresample=8000,aformat=channel_layouts=mono,silencedetect=noise=${+noiseDb}dB:d=${+minSec}`, "-f", "null", "-"], { job });
-  const res = [];
-  let cur = null;
-  for (const m of String(r.stderr).matchAll(/silence_(start|end):\s*(-?[\d.]+)/g)) {
-    const v = parseFloat(m[2]);
-    if (m[1] === "start") cur = Math.max(0, v);
-    else if (cur !== null) { res.push([cur, v]); cur = null; }
-  }
-  if (cur !== null) res.push([cur, dur || cur]);
-  return res;
+export async function detectSilence(path, noiseDb = -35, minSec = 2, dur = null, job = null, windows = null) {
+  // windows = [[a, b], ...]: scan ONLY these stretches (jumps straight to them - the whole movie is never read)
+  const one = async (start, length) => {
+    const pre = start === null ? [] : ["-ss", start.toFixed(3), "-t", length.toFixed(3)];
+    const r = await ffrun(["-nostdin", "-hide_banner", "-v", "info", ...pre, "-i", path, "-vn", "-af",
+      `aresample=8000,aformat=channel_layouts=mono,silencedetect=noise=${+noiseDb}dB:d=${+minSec}`, "-f", "null", "-"], { job });
+    const off = start || 0, res = [];
+    let cur = null;
+    for (const m of String(r.stderr).matchAll(/silence_(start|end):\s*(-?[\d.]+)/g)) {
+      const v = parseFloat(m[2]);
+      if (m[1] === "start") cur = Math.max(0, v);
+      else if (cur !== null) { res.push([cur + off, v + off]); cur = null; }
+    }
+    if (cur !== null) res.push([cur + off, (length || dur || cur) + off]);
+    return res;
+  };
+  if (!windows) return one(null, dur);
+  const all = [];
+  for (const [a, b] of windows) all.push(...(await one(a, b - a)));
+  return all;
 }
 
 // Silent stretches are cut, keeping `pad` seconds of silence on both sides. Returns [[start, length], ...].

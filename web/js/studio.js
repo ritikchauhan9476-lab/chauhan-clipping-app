@@ -629,7 +629,18 @@ export class Studio {
   }
 
   // ================================================================ silence
-  scanKey() { return [this.movie, +this.sil.db, +this.sil.min]; }
+  scanKey() {
+    const base = [this.movie, +this.sil.db, +this.sil.min];
+    return this.dl.head_on ? [...base, +this.dl.head_sec || 3, JSON.stringify(this.headWindows())] : base;
+  }
+  // "first N seconds only": just these stretches (start of every ticked part + a little margin) need the silence scan
+  headWindows() {
+    const h = (Math.max(0.5, +this.dl.head_sec || 3)) + 1;
+    const w = this.parts.filter((p) => p.on && p.sil).map((p) => [+p.start.toFixed(3), +Math.min(p.end, p.start + h).toFixed(3)]).sort((a, b) => a[0] - b[0]);
+    const m = [];
+    for (const [a, b] of w) { if (m.length && a <= m[m.length - 1][1]) m[m.length - 1][1] = Math.max(m[m.length - 1][1], b); else m.push([a, b]); }
+    return m;
+  }
   buildSilence() {
     const b = this.body, S = this.sil;
     const changed = () => { this.updateSilSummary(); this.app.changed(); };
@@ -650,9 +661,9 @@ export class Studio {
   async scanSilence() {
     if (!this.movie) { await alertBox("Please choose a video first."); return false; }
     const key = this.scanKey();
-    if (this.silSummary) this.silSummary.textContent = "Scanning the sound of the whole movie ...";
+    if (this.silSummary) this.silSummary.textContent = `${this.dl.head_on ? "Scanning the sound at the start of each part ..." : "Scanning the sound of the whole movie ..."}`;
     try {
-      const segs = await E.detectSilence(this.movie, this.sil.db, this.sil.min, this.dur);
+      const segs = await E.detectSilence(this.movie, this.sil.db, this.sil.min, this.dur, null, this.dl.head_on ? this.headWindows() : null);
       this.silList = segs; this.silKey = key;
       this.updateSilSummary();
       this.app.changed();

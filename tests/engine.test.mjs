@@ -131,6 +131,18 @@ await test("silence detection + keep ranges", async () => {
   assert.ok(keep.length >= 2);
 });
 
+await test("silence scan of only the start of parts (windows) matches the full scan", async () => {
+  const full = await E.detectSilence(media.movie, -35, 2, info.duration);
+  const inside = full.find(([a, b]) => b - a >= 2 && b < info.duration - 5);
+  assert.ok(inside, "no silence to test with");
+  const w = [Math.max(0, inside[0] - 3), inside[1] + 2];
+  const t0 = Date.now();
+  const part = await E.detectSilence(media.movie, -35, 2, w[1] - w[0], null, [w]);
+  const hit = part.find(([a, b]) => Math.abs(a - inside[0]) < 0.3 && Math.abs(b - inside[1]) < 0.3);
+  assert.ok(hit, `window scan ${JSON.stringify(part)} vs full ${JSON.stringify(inside)}`);
+  assert.deepEqual(await E.detectSilence(media.movie, -35, 2, 10, null, []), []);
+});
+
 await test("studio engine: parts with silence cut joined + numbering", async () => {
   const sil = await E.detectSilence(media.movie, -35, 2, info.duration);
   const s = E.sanitize({ codec: "H.264 (CPU)", quality: "Fast (phone)", bitrate: 3000, resolution: "480p" });

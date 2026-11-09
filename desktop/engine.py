@@ -995,9 +995,20 @@ Engine = AIEngine
 SIL_RE = re.compile(r"silence_(start|end):\s*(-?[\d.]+)")
 
 
-def detect_silence(path, noise_db=-35.0, min_sec=2.0, dur=None):
-    """Scan the movie's audio. Returns [(start, end), ...] of silent stretches >= min_sec long."""
-    cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-v", "info", "-i", path, "-vn",
+def detect_silence(path, noise_db=-35.0, min_sec=2.0, dur=None, windows=None):
+    """Scan the movie's audio. Returns [(start, end), ...] of silent stretches >= min_sec long.
+    windows=[(a, b), ...]: scan ONLY these time ranges (jumps straight to them - a 2-hour movie is not read at all)."""
+    if windows is not None:
+        res = []
+        for a, b in windows:
+            res += [(x + a, y + a) for x, y in _detect_silence(path, noise_db, min_sec, b - a, start=a, length=b - a)]
+        return res
+    return _detect_silence(path, noise_db, min_sec, dur)
+
+
+def _detect_silence(path, noise_db, min_sec, dur, start=None, length=None):
+    pre = ["-ss", f"{start:.3f}", "-t", f"{length:.3f}"] if start is not None else []
+    cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-v", "info", *pre, "-i", path, "-vn",
            "-af", f"aresample=8000,aformat=channel_layouts=mono,"
                   f"silencedetect=noise={float(noise_db):g}dB:d={float(min_sec):g}", "-f", "null", "-"]
     r = subprocess.run(cmd, capture_output=True, text=True, errors="ignore", creationflags=NOWIN, timeout=7200)

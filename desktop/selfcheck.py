@@ -38,6 +38,16 @@ def t_ffmpeg():
     return v
 
 
+def t_silence_windows():
+    import engine as E
+    full = E.detect_silence(movie, -35, 0.5, 12)
+    win = E.detect_silence(movie, -35, 0.5, None, [(0.0, 7.0)])
+    assert full and win, (full, win)
+    assert any(abs(a - fa) < 0.3 and abs(b - fb) < 0.3 for a, b in win for fa, fb in full), (win, full)
+    assert all(b <= 7.3 for _, b in win), win
+    return f"{len(win)} stretch(es) in the first 7 s"
+
+
 def t_modules():
     import engine, dialogue, colour, project, model, scoring, preview, widgets, auto_short, auto_short_ui, studio  # noqa: F401
     import app  # noqa: F401
@@ -130,6 +140,7 @@ def t_whisper():
 
 step("ffmpeg + test movie", t_ffmpeg)
 step("all modules import", t_modules)
+step("silence scan of only the start of parts", t_silence_windows)
 step("window and Cutting ON/OFF switches", t_window)
 step("plain parts export (nothing removed)", t_plain_export)
 step("Silero speech detection", t_silero)
