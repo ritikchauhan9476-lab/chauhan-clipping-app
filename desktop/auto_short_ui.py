@@ -140,6 +140,27 @@ class AutoShortFrame(ctk.CTkFrame):
              "onto a real shot change (a little slower). The detector is the Silero AI model (run install_ai.bat once); without it a simpler "
              "built-in detector is used.")
 
+        head("KEEP VIEWERS WATCHING (retention boost)")
+        self.bo = {}
+        for key, text, default in (
+                ("zoom", "Punch-in zoom on the cuts (the picture switches wide / close, so jump cuts look planned)", True),
+                ("bar", "Progress bar along the top (people stay to see it fill)", True),
+                ("loud", "Even, loud speech (quiet parts are lifted - nobody swipes away because of low volume)", True),
+                ("crisp", "Crisp and vivid picture (a little sharper, a little more colour)", True),
+                ("part_label", "'PART n' label for the first 3 seconds (makes people look for the next part)", True)):
+            self.bo[key] = ctk.BooleanVar(value=default)
+            ctk.CTkCheckBox(f, text=text, variable=self.bo[key], text_color=TEXT).pack(anchor="w", padx=8, pady=3)
+        self.bo_pct = NumField(f, "Zoom strength (%)", 2, 20, 1, 8, "{:.0f}", None, label_width=150)
+        self.bo_pct.pack(fill="x", padx=2, pady=2)
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(fill="x", padx=8, pady=2)
+        ctk.CTkLabel(row, text="Opening text", text_color=TEXT, width=100, anchor="w").pack(side="left")
+        self.bo_hook = ctk.CTkEntry(row, width=300, placeholder_text="optional, shown for the first 3 s, e.g. Wait for it ...")
+        self.bo_hook.pack(side="left")
+        note("All of this is done in the same single export pass with light filters, so exporting is only a little "
+             "slower. Switch everything off and the shorts are exactly as before. Opening text can use {n} for the "
+             "short number.")
+
         head("LOOK OF THE SHORTS")
         note("Colour, Aspect & Crop, Overlay, Text and Export (quality, codec) settings come from the Simple Edit "
              "tab. Overlay and text times count from the start of each short. Use {n} with Auto-number in a text to "
@@ -151,7 +172,16 @@ class AutoShortFrame(ctk.CTkFrame):
                     min_len=float(self.min_len.get()), max_len=float(self.max_len.get()),
                     keep_last=bool(self.keep_last.get()), pad=float(self.pad.get()),
                     minsil=float(self.minsil.get()), denoise=bool(self.denoise.get()),
-                    min_piece=float(self.minpiece.get()), scan_picture=bool(self.scan_pic.get()))
+                    min_piece=float(self.minpiece.get()), scan_picture=bool(self.scan_pic.get()),
+                    boost=self.boost_opts(True))
+
+    def boost_opts(self, always=False):
+        """Retention boost settings. Empty dict = everything off (unless always: for saving the project)."""
+        d = {k: bool(v.get()) for k, v in self.bo.items()}
+        d.update(zoom_pct=float(self.bo_pct.get()), hook=self.bo_hook.get().strip())
+        if not always and not (any(d[k] for k in self.bo) or d["hook"]):
+            return {}
+        return d
 
     def set_state(self, st):
         st = st or {}
@@ -168,6 +198,12 @@ class AutoShortFrame(ctk.CTkFrame):
         self.denoise.set(bool(st.get("denoise", True)))
         self.minpiece.set(float(st.get("min_piece", dialogue.MIN_PIECE)))
         self.scan_pic.set(bool(st.get("scan_picture", True)))
+        bo = st.get("boost") or {}
+        for k, v in self.bo.items():
+            v.set(bool(bo.get(k, True)))
+        self.bo_pct.set(float(bo.get("zoom_pct", 8)))
+        self.bo_hook.delete(0, "end")
+        self.bo_hook.insert(0, str(bo.get("hook", "")))
 
     # ================================================================ helpers
     def refresh_movie(self):
@@ -291,7 +327,7 @@ class AutoShortFrame(ctk.CTkFrame):
             opts = dict(sm.dialogue_opts())
             opts.update(pad_ms=int(self.pad.get()), min_sil_ms=int(self.minsil.get()),
                         denoise=bool(self.denoise.get()), vad=True, min_piece=float(self.minpiece.get()),
-                        scan_picture=bool(self.scan_pic.get()))
+                        scan_picture=bool(self.scan_pic.get()), boost=self.boost_opts())
         except ValueError as e:
             messagebox.showerror("Auto Short", str(e) if str(e) and "could not convert" not in str(e)
                                  else "Please enter the Start / End values as numbers.")

@@ -13,7 +13,8 @@ export class AutoShortTab {
     this.app = app; this.simple = simple;
     this.running = false; this.job = null; this.resume = null; this.outDir = "";
     this.o = { use_parts: false, start: "0", end: "", min_len: A.MIN_LEN, max_len: A.MAX_LEN, keep_last: false, pad: D.PAD_MS,
-      minsil: D.MIN_SIL_MS, denoise: true, min_piece: D.MIN_PIECE, scan_picture: true };
+      minsil: D.MIN_SIL_MS, denoise: true, min_piece: D.MIN_PIECE, scan_picture: true,
+      boost: { ...E.BOOST_DEFAULT } };
     this.build();
   }
 
@@ -54,6 +55,15 @@ export class AutoShortTab {
       checkField("Noise reduction on the sound", o.denoise, (v) => { o.denoise = v; ch(); }).el,
       checkField("Scan the picture: skip fast-cut montage, cut on shot changes", o.scan_picture, (v) => { o.scan_picture = v; ch(); }).el,
       note("Everything where nobody is talking is cut from the picture AND the sound. Smaller padding = tighter, faster talking. Shortest clip: no piece is shorter than this, so there are no 0.2 s flashes. Scan the picture: parts with very fast picture cuts (action montage, music) are skipped and every cut is moved onto a real shot change (a little slower). The detector is the Silero AI model; without it a simpler built-in detector is used."),
+      section("KEEP VIEWERS WATCHING (retention boost)"),
+      checkField("Punch-in zoom on the cuts (jump cuts look planned)", o.boost.zoom, (v) => { o.boost.zoom = v; ch(); }).el,
+      checkField("Progress bar along the top (people stay to see it fill)", o.boost.bar, (v) => { o.boost.bar = v; ch(); }).el,
+      checkField("Even, loud speech (quiet parts are lifted)", o.boost.loud, (v) => { o.boost.loud = v; ch(); }).el,
+      checkField("Crisp and vivid picture", o.boost.crisp, (v) => { o.boost.crisp = v; ch(); }).el,
+      checkField("'PART n' label for the first 3 seconds", o.boost.part_label, (v) => { o.boost.part_label = v; ch(); }).el,
+      new NumField("Zoom strength (%)", 2, 20, 1, o.boost.zoom_pct, { fmt: 0, onChange: (v) => { o.boost.zoom_pct = v; ch(); } }).el,
+      textField("Opening text", o.boost.hook, (v) => { o.boost.hook = v; ch(); }, { placeholder: "optional, first 3 s, e.g. Wait for it ..." }).el,
+      note("All of this is done in the same single export pass with light filters, so exporting is only a little slower. Switch everything off and the shorts are exactly as before. Opening text can use {n} for the short number."),
       section("LOOK OF THE SHORTS"),
       note("Colour, Crop, Overlay, Text, Music and Export (quality, codec, bitrate) settings come from the Simple Edit tab. Overlay and text times count from the start of each short. Use {n} in a text to get Part 1, Part 2, ... Text editing with Whisper (words to remove) uses the Simple Edit > Dialogue tab."));
   }
@@ -132,7 +142,7 @@ export class AutoShortTab {
       ranges = [[a, b]];
     }
     const opts = { ...sm.dialogueOpts(), pad_ms: parseInt(o.pad, 10), min_sil_ms: parseInt(o.minsil, 10), denoise: !!o.denoise, vad: true,
-      min_piece: +o.min_piece, scan_picture: !!o.scan_picture };
+      min_piece: +o.min_piece, scan_picture: !!o.scan_picture, boost: this.boostOpts() };
     const s = E.sanitize(sm.cfg);
     this.outDir = this.folder();
     this.log.clear();
@@ -165,6 +175,13 @@ export class AutoShortTab {
     this.setResume(this.resume);
   }
 
+  // retention boost settings; {} = everything off
+  boostOpts() {
+    const b = this.o.boost;
+    const any = b.zoom || b.bar || b.loud || b.crisp || b.part_label || String(b.hook || "").trim();
+    return any ? { ...b, zoom_pct: +b.zoom_pct || 8, hook: String(b.hook || "").trim() } : {};
+  }
+
   stop() { if (this.job) { this.prog.set(null, "Stopping ..."); this.job.stop(); } }
   stopAll() { this.stop(); }
 
@@ -176,6 +193,7 @@ export class AutoShortTab {
     o.min_len = +(st.min_len ?? A.MIN_LEN); o.max_len = +(st.max_len ?? A.MAX_LEN); o.keep_last = !!st.keep_last;
     o.pad = +(st.pad ?? D.PAD_MS); o.minsil = +(st.minsil ?? D.MIN_SIL_MS); o.denoise = st.denoise ?? true;
     o.min_piece = +(st.min_piece ?? D.MIN_PIECE); o.scan_picture = st.scan_picture ?? true;
+    o.boost = { ...E.BOOST_DEFAULT, ...(st.boost || {}) };
     this.resume = null;
     this.setResume(st.resume || null);
     this.buildSettings();

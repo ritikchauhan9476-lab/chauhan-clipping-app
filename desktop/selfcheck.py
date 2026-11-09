@@ -235,6 +235,29 @@ def t_autoshort_carry():
     return f"{len(made)} short(s) from 6 x 45 s ranges with 20 s of talking each"
 
 
+def t_retention_boost():
+    import engine as E
+    t = E.zoom_toggles([3, 4, 9, 10, 11, 25], 40)
+    assert all(t[i] - t[i - 1] >= 2.5 - 1e-6 for i in range(1, len(t))), t
+    assert 3 in t and 25 in t, t
+    assert E.zoom_expr([], 8) == "1"
+    cpu = [c for c in E.CODECS if "CPU" in c][0]
+    s = E.sanitize({"resolution": "480p", "codec": cpu, "rate_mode": E.RATE_MODES[0], "bitrate": 2000, "aspect": "9:16",
+                    "_boost": dict(E.BOOST_DEFAULT, hook="Wait {n}"), "_denoise": True, "_joint_fade": 0.02,
+                    "texts": [dict(E.TEXT_DEFAULT, text="PART 1", start=0.0, end=3.0, pos="Top-Center", hcenter=True)]})
+    out = os.path.join(tmp, "boost.mp4")
+    info = E.probe_info(movie)
+    pieces = [(0.5, 3.0), (5.0, 3.0), (10.0, 3.0)]
+    r = E.Runner(s, lambda *_: None, lambda *a: None, lambda c: None)
+    assert r.cut(movie, pieces[0][0], 9.0, out, info, None, s, pieces=pieces), "export with the retention boost failed"
+    assert os.path.getsize(out) > 5000
+    import subprocess
+    px = subprocess.run(["ffmpeg", "-v", "error", "-sseof", "-0.3", "-i", out, "-frames:v", "1", "-vf", "crop=2:2:200:0",
+                         "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, creationflags=E.NOWIN).stdout
+    assert len(px) >= 3 and px[0] > 190 and px[1] > 140 and px[2] < 110, f"progress bar not at the end: {list(px)}"
+    return "zoom + bar + loudness + PART label export OK, progress bar full at the end"
+
+
 def t_silero():
     import dialogue
     p = dialogue.silero_model_path()
@@ -264,6 +287,7 @@ step("silence cut, one part at a time (AI Clipping)", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)
 step("400 pieces in one clip (long filter graph)", t_many_pieces)
 step("auto short: dialogue carried on between ranges", t_autoshort_carry)
+step("auto short: retention boost export", t_retention_boost)
 step("Silero speech detection", t_silero)
 if os.path.isfile(os.path.join(HERE, "models", "whisper-small", "model.bin")):
     os.environ["HF_HUB_OFFLINE"] = "1"

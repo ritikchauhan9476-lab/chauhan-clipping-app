@@ -272,6 +272,26 @@ export function frameRate(info) {
 
 // Filter lines that keep only `pieces` ([[abs_start, length], ...]) of the input and join them. Picture and
 // sound are cut and joined in the SAME concat filter, so they can never drift apart.
+// ------------------------------------------------------------------ retention boost (Auto Short)
+export const BOOST_DEFAULT = { zoom: true, zoom_pct: 8, bar: true, loud: true, crisp: true, part_label: true, hook: "" };
+
+// Times (s from the start of the clip) where the picture switches between normal and punched-in: on the dialogue
+// cuts (a jump cut then looks planned), plus every `step` s in a calm stretch. Never closer than minGap.
+export function zoomToggles(bounds, dur, minGap = 2.5, maxGap = 5.5, step = 4.0) {
+  const out = [];
+  let last = 0;
+  for (const c of [...bounds.map(Number).sort((a, b) => a - b), dur + maxGap + 1]) {
+    while (c - last > maxGap && last + step < dur - 1) { last += step; out.push(Math.round(last * 1000) / 1000); }
+    if (c < dur - 1 && c - last >= minGap) { out.push(Math.round(c * 1000) / 1000); last = c; }
+  }
+  return out;
+}
+export function zoomExpr(toggles, pct) {
+  const amt = Math.max(0, +pct) / 100;
+  if (!toggles.length || amt <= 0) return "1";
+  return `1+${amt.toFixed(3)}*mod(${toggles.map((t) => `gte(t,${t.toFixed(3)})`).join("+")},2)`;
+}
+
 export function piecesGraph(pieces, base, fr, hasAudio, fade = 0.02) {
   const n = pieces.length;
   const rel = pieces.map(([a, d]) => {
@@ -424,6 +444,17 @@ export async function buildCommand(movie, start, dur, out, sIn, info, { crop = n
   const ff = CL.ffmpegFinish(s);
   if (ff.length) add(ff.join(","));
 
+  // retention boost: crisp look, punch-in zoom on the cuts (light filters, same single pass)
+  const boost = s._boost || {};
+  if (boost.crisp) add("eq=contrast=1.05:saturation=1.10,unsharp=luma_msize_x=3:luma_msize_y=3:luma_amount=0.6:chroma_amount=0");
+  if (boost.zoom) {
+    const bounds = [];
+    let acc = 0;
+    for (const [, d] of (pieces || []).slice(0, -1)) { acc += d; bounds.push(acc); }
+    const z = zoomExpr(zoomToggles(bounds, dur), boost.zoom_pct ?? 8);
+    if (z !== "1") add(`scale=w='trunc(${OW}*(${z})/2)*2':h='trunc(${OH}*(${z})/2)*2':eval=frame:flags=bilinear,crop=${OW}:${OH},setsar=1`);
+  }
+
   // overlays (photo / video / GIF) - higher layer on top
   for (const ov0 of [...s.overlays].sort(byLayer)) {
     const ov = { ...OVERLAY_DEFAULT, ...ov0 };
@@ -473,6 +504,13 @@ export async function buildCommand(movie, start, dur, out, sIn, info, { crop = n
     st.cur = lab;
   }
 
+  if (boost.bar && dur > 1) {                      // thin progress bar along the top: viewers stay to see it fill
+    const bh = Math.max(4, Math.floor(Math.floor(OH / 200) / 2) * 2);
+    fl.push(`color=c=0xFFD400:s=${OW}x${bh}:r=${fps},format=yuv420p[pbar]`);
+    const lab = newlab();
+    fl.push(`${st.cur}[pbar]overlay=x='-w+w*t/${dur.toFixed(3)}':y=0:shortest=1:format=auto${lab}`);
+    st.cur = lab;
+  }
   fl.push(`${st.cur}format=yuv420p[vout]`);
 
   // audio: original track (optional) + any number of audio layers, mixed
@@ -494,7 +532,8 @@ export async function buildCommand(movie, start, dur, out, sIn, info, { crop = n
   if (info.has_audio && !replace) {
     const ovVol = Math.max(0, +s.orig_volume) / 100;
     const clean = s._denoise ? "highpass=f=70,afftdn=nf=-25," : "";
-    fl.push(`${ain}aformat=sample_rates=48000:channel_layouts=stereo,${clean}volume=${ovVol.toFixed(3)}[oa]`);
+    const loud = boost.loud ? "dynaudnorm=f=250:g=15," : "";
+    fl.push(`${ain}aformat=sample_rates=48000:channel_layouts=stereo,${clean}${loud}volume=${ovVol.toFixed(3)}[oa]`);
     labels.push("[oa]");
   }
   auds.forEach(([a, ast, off, L], k) => {

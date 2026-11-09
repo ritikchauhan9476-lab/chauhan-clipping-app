@@ -443,6 +443,33 @@ def frame_rate(info):
         return 25.0
 
 
+# ---------------------------------------------------------------- retention boost (Auto Short)
+BOOST_DEFAULT = dict(zoom=True, zoom_pct=8, bar=True, loud=True, crisp=True, part_label=True, hook="")
+
+
+def zoom_toggles(bounds, dur, min_gap=2.5, max_gap=5.5, step=4.0):
+    """Times (seconds from the start of the clip) where the picture switches between normal and punched-in.
+    Switches happen on the dialogue cuts (a jump cut then looks like a planned edit); a calm stretch gets a switch
+    every `step` seconds, because a picture that never changes loses viewers. Never closer than `min_gap`."""
+    out, last = [], 0.0
+    for c in sorted(float(b) for b in bounds) + [dur + max_gap + 1.0]:
+        while c - last > max_gap and last + step < dur - 1.0:
+            last += step
+            out.append(round(last, 3))
+        if c < dur - 1.0 and c - last >= min_gap:
+            out.append(round(c, 3))
+            last = c
+    return out
+
+
+def zoom_expr(toggles, pct):
+    """ffmpeg expression for the zoom factor at time t: 1 = normal, 1+pct/100 = punched in, switching at each toggle."""
+    amt = max(0.0, float(pct)) / 100.0
+    if not toggles or amt <= 0:
+        return "1"
+    return f"1+{amt:.3f}*mod({'+'.join(f'gte(t,{t:.3f})' for t in toggles)},2)"
+
+
 def pieces_graph(pieces, base, fr, has_audio, fade=0.02):
     """Filter lines that keep only `pieces` ([(abs_start, length), ...]) of the input and join them.
     Picture and sound are cut and joined in the SAME concat filter, so they can never drift apart.
@@ -611,6 +638,20 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
     if ff:
         add(",".join(ff))
 
+    # retention boost: crisp look, punch-in zoom on the cuts (all cheap filters, one pass)
+    boost = s.get("_boost") or {}
+    if boost.get("crisp"):
+        add("eq=contrast=1.05:saturation=1.10,unsharp=luma_msize_x=3:luma_msize_y=3:luma_amount=0.6:chroma_amount=0")
+    if boost.get("zoom"):
+        bounds, acc = [], 0.0
+        for _, d in (pieces or [])[:-1]:
+            acc += d
+            bounds.append(acc)
+        z = zoom_expr(zoom_toggles(bounds, dur), boost.get("zoom_pct", 8))
+        if z != "1":
+            add(f"scale=w='trunc({OW}*({z})/2)*2':h='trunc({OH}*({z})/2)*2':eval=frame:flags=bilinear,"
+                f"crop={OW}:{OH},setsar=1")
+
     # overlays (photo / video / GIF) - higher layer is drawn on top
     for ov in sorted(s["overlays"], key=_layer_key):
         ov = {**OVERLAY_DEFAULT, **ov}
@@ -702,6 +743,12 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
         parts += [f"x={xe}", f"y={ye}", f"enable='between(t,{tst:.3f},{ten:.3f})'"]
         add("drawtext=" + ":".join(parts))
 
+    if boost.get("bar") and dur > 1.0:                 # thin progress bar along the top: viewers stay to see it fill
+        bh = max(4, (OH // 200) // 2 * 2)
+        fl.append(f"color=c=0xFFD400:s={OW}x{bh}:r={fps},format=yuv420p[pbar]")
+        lab = newlab()
+        fl.append(f"{st['cur']}[pbar]overlay=x='-w+w*t/{dur:.3f}':y=0:shortest=1:format=auto{lab}")
+        st["cur"] = lab
     fl.append(f"{st['cur']}format=yuv420p[vout]")
 
     # audio: original track (optional) + any number of audio layers, mixed
@@ -725,7 +772,8 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
         if info["has_audio"] and not replace:
             ov_vol = max(0.0, float(s["orig_volume"])) / 100.0
             clean = "highpass=f=70,afftdn=nf=-25," if s.get("_denoise") else ""
-            fl.append(f"{ain}aformat=sample_rates=48000:channel_layouts=stereo,{clean}volume={ov_vol:.3f}[oa]")
+            loud = "dynaudnorm=f=250:g=15," if boost.get("loud") else ""
+            fl.append(f"{ain}aformat=sample_rates=48000:channel_layouts=stereo,{clean}{loud}volume={ov_vol:.3f}[oa]")
             labels.append("[oa]")
         for k, (a, ast, off, L) in enumerate(auds):
             i = add_input((["-stream_loop", "-1"] if a["loop"] else []) + ["-i", a["path"]])

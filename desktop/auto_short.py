@@ -99,6 +99,8 @@ class AutoShortJob:
         s["_denoise"] = bool(opts.get("denoise", True))
         s["_joint_fade"] = D.FADE
         s["fade_sec"] = 0.05
+        boost = opts.get("boost")                          # retention boost; None / empty = off
+        s["_boost"] = dict(E.BOOST_DEFAULT, **boost) if isinstance(boost, dict) and boost else {}
         self.runner = E.Runner(s, log, lambda *a: None, lambda c: None)
         self.made = 0
         self.stopped = False
@@ -229,6 +231,18 @@ class AutoShortJob:
         if self.on_resume:
             self.on_resume(info)
 
+    def boost_texts(self, n, total):
+        """'PART n' label and optional opening text for the first seconds of a short."""
+        bo = self.runner.s.get("_boost") or {}
+        out, end = [], min(3.0, total)
+        if bo.get("hook"):
+            out.append(dict(E.TEXT_DEFAULT, text=str(bo["hook"]).replace("{n}", str(n)), start=0.0, end=end, size=7.0,
+                            pos="Custom", hcenter=True, y=18, outline=3, box=True, box_opacity=45, bold=True))
+        if bo.get("part_label"):
+            out.append(dict(E.TEXT_DEFAULT, text=f"PART {n}", start=0.0, end=end, size=4.5, pos="Top-Center",
+                            hcenter=True, outline=2, shadow=True))
+        return out
+
     def render(self, group):
         """Exports one short. Returns False when it was stopped in the middle (nothing is kept of it)."""
         pieces = limit_pieces(D.join_adjacent(group))
@@ -239,6 +253,7 @@ class AutoShortJob:
         name = f"{self.base}_short{n:02d}_{mm:02d}m{ss:02d}s.mp4"
         final = os.path.join(self.out_dir, name)
         ovs, txs = relative_items(self.items, total, n)
+        txs = txs + self.boost_texts(n, total)
         S = dict(self.runner.s, overlays=ovs, texts=txs)
         self.log(f"Short {n}: {total:.1f}s of dialogue from {_mmss(pieces[0][0])} - {len(pieces)} piece(s), "
                  f"{len(pieces) - 1} cut(s), shortest piece {min(d for _, d in pieces):.1f}s, "

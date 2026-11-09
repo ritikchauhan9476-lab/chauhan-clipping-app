@@ -183,6 +183,38 @@ await test("auto short: many short ranges that follow each other still make shor
   assert.ok(logs.some((l) => /carried on into the next range/.test(l)), "no carry-over logged");
 });
 
+await test("zoom toggles: on the cuts, none closer than 2.5 s, calm stretches get one too", async () => {
+  const t = E.zoomToggles([3, 4, 9, 10, 11, 25], 40);
+  assert.ok(t.every((x, i) => i === 0 || x - t[i - 1] >= 2.5 - 1e-6), JSON.stringify(t));
+  assert.ok(t.includes(3) && t.includes(25), JSON.stringify(t));
+  assert.ok(t.every((x, i) => i === 0 || x - t[i - 1] <= 5.5 + 1e-6) && 40 - t[t.length - 1] <= 6.6, JSON.stringify(t));
+  assert.equal(E.zoomExpr([], 8), "1");
+});
+
+await test("auto short with the retention boost: zoom, progress bar, loudness, PART label, opening text", async () => {
+  const outDir = path.join(paths.out, "auto_boost");
+  fs.rmSync(outDir, { recursive: true, force: true });
+  const s = E.sanitize({ codec: "H.264 (CPU)", quality: "Fast (phone)", bitrate: 3000, resolution: "480p", aspect: "9:16" });
+  const made = [], logs = [];
+  const job = new A.AutoShortJob({
+    movie: media.movie, ranges: [[0, 120]], opts: { pad_ms: 150, min_sil_ms: 300, min_piece: 1, denoise: true, vad: true,
+      boost: { ...E.BOOST_DEFAULT, hook: "Wait for it - part {n}" } }, settings: s, items: [],
+    outDir, tmpDir: paths.cache, log: (m) => logs.push(m), progress: () => {}, minLen: 20, maxLen: 30, chunk: 60,
+    onShort: (d) => made.push(d), onResume: () => {},
+  });
+  await job.run();
+  assert.ok(made.length >= 1, "no short made:\n" + logs.join("\n"));
+  const f = made[0].path, p = probe(f);
+  const v = p.streams.find((x) => x.codec_type === "video");
+  assert.ok(v.height > v.width, `not vertical: ${v.width}x${v.height}`);
+  assert.ok(Math.abs(+p.format.duration - made[0].length) < 1.0, `${p.format.duration} vs ${made[0].length}`);
+  assert.ok(p.streams.some((x) => x.codec_type === "audio"), "no audio");
+  // the progress bar is full at the end: a top-row pixel of the last frames is yellow
+  const px = execFileSync("ffmpeg", ["-v", "error", "-sseof", "-0.3", "-i", f, "-frames:v", "1", "-vf", `crop=2:2:${Math.floor(v.width / 4) * 2}:0`,
+    "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]);
+  assert.ok(px[0] > 190 && px[1] > 140 && px[2] < 110, `progress bar not found at the end: rgb ${[...px]}`);
+});
+
 await test("auto short: stop after the first short, then continue", async () => {
   const outDir = path.join(paths.out, "auto");
   fs.rmSync(outDir, { recursive: true, force: true });

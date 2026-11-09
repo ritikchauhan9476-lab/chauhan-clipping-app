@@ -81,6 +81,7 @@ export class AutoShortJob {
     this.number = parseInt(firstNumber, 10) || 1;
     this.chunk = +chunk;
     const s = { ...settings, _denoise: !!(opts.denoise ?? true), _joint_fade: D.FADE, fade_sec: 0.05 };
+    s._boost = opts.boost && Object.keys(opts.boost).length ? { ...E.BOOST_DEFAULT, ...opts.boost } : {};   // retention boost
     this.runner = new E.Runner(s, log, null, null, tmpDir);
     this.made = 0;
     this.stopped = false;
@@ -201,6 +202,14 @@ export class AutoShortJob {
   }
 
   // Exports one short. Returns false when it was stopped in the middle (nothing is kept of it).
+  // 'PART n' label and optional opening text for the first seconds of a short
+  boostTexts(n, total) {
+    const bo = this.runner.s._boost || {}, out = [], end = Math.min(3, total);
+    if (bo.hook) out.push({ ...E.TEXT_DEFAULT, text: String(bo.hook).split("{n}").join(String(n)), start: 0, end, size: 7, pos: "Custom", hcenter: true, y: 18, outline: 3, box: true, box_opacity: 45, bold: true });
+    if (bo.part_label) out.push({ ...E.TEXT_DEFAULT, text: `PART ${n}`, start: 0, end, size: 4.5, pos: "Top-Center", hcenter: true, outline: 2, shadow: true });
+    return out;
+  }
+
   async render(group) {
     const pieces = limitPieces(D.joinAdjacent(group));
     const total = pieces.reduce((a, [, d]) => a + d, 0);
@@ -210,7 +219,7 @@ export class AutoShortJob {
     const name = `${this.base}_short${String(n).padStart(2, "0")}_${E.pad2(mm)}m${E.pad2(ss)}s.mp4`;
     const final = E.join(this.outDir, name);
     const [ovs, txs, auds] = relativeItems(this.items, total, n);
-    const S = { ...this.runner.s, overlays: ovs, texts: txs, audios: auds };
+    const S = { ...this.runner.s, overlays: ovs, texts: [...txs, ...this.boostTexts(n, total)], audios: auds };
     const shortest = Math.min(...pieces.map(([, d]) => d));
     this.log(`Short ${n}: ${total.toFixed(1)}s of dialogue from ${E.mmss(pieces[0][0])} - ${pieces.length} piece(s), ` +
       `${pieces.length - 1} cut(s), shortest piece ${shortest.toFixed(1)}s, average ${(total / pieces.length).toFixed(1)}s - exporting ...`);
