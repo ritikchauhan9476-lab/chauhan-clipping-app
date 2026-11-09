@@ -59,8 +59,9 @@ export class Studio {
     this.pickBtn = button("Pick colour", () => this.togglePick(), "small quiet");
     const bar = h("div", { class: "posbar" }, this.playBtn, this.posLbl, this.pos, this.pickBtn);
     this.sticky = h("div", { class: "sticky-preview" }, top, this.stage, bar);
+    // Simple Edit = editing only (no silence cut, no dialogue clean-up: those are in AI Clipping)
     const names = this.mode === "ai" ? ["AI", "Parts", "Crop", "Colour", "Overlay", "Text", "Silence", "Export", "Dialogue"]
-      : ["Parts", "Crop", "Colour", "Overlay", "Text", "Silence", "Export", "Dialogue"];
+      : ["Parts", "Crop", "Colour", "Overlay", "Text", "Export"];
     this.chips = new Chips(names, (n) => this.showPanel(n));
     this.body = h("div", { class: "panel" });
     this.el.append(this.sticky, this.chips.el, this.body);
@@ -207,9 +208,9 @@ export class Studio {
     clear(this.partsBox);
     this.parts.forEach((p, i) => {
       const on = checkField(`Part ${this.partNumber(i)}`, p.on, (v) => { p.on = v; this.refreshSum(); this.app.changed(); });
-      const sil = checkField("cut silence", p.sil, (v) => { p.sil = v; this.refreshSum(); this.app.changed(); });
+      const sil = this.mode === "ai" ? checkField("cut silence", p.sil, (v) => { p.sil = v; this.refreshSum(); this.app.changed(); }) : null;
       const row = h("div", { class: "part" + (i === this.partIdx ? " cur" : "") },
-        h("div", { class: "part-top" }, on.el, sil.el),
+        h("div", { class: "part-top" }, on.el, sil ? sil.el : null),
         h("div", { class: "part-bot" },
           h("span", { class: "mono" }, `${E.tstr(p.start)} → ${E.tstr(p.end)}  (${(p.end - p.start).toFixed(1)}s)`),
           h("span", { class: "grow note" }, p.label || ""),
@@ -702,7 +703,7 @@ export class Studio {
     const b = this.body, c = this.cfg;
     const set = (k) => (v) => { c[k] = v; this.app.changed(); this.showPanel("Export"); };
     this.cutInfo = h("div", { class: "note" });
-    b.append(section("CUTTING (ON / OFF)"),
+    if (this.mode === "ai") b.append(section("CUTTING (ON / OFF)"),
       checkField("Cut silent pauses", this.sil.on, (v) => { this.sil.on = v; this.app.changed(); this.updateCutInfo(); }).el,
       checkField("Dialogue clean-up (keep only talking)", this.dl.on, (v) => { this.dl.on = v; this.app.changed(); this.updateCutInfo(); }).el,
       ...this.headControls(),
@@ -761,6 +762,7 @@ export class Studio {
 
   // what the export button will do with the two switches
   updateCutInfo() {
+    if (this.mode !== "ai") return;
     const dl = !!this.dl.on, sl = !!this.sil.on;
     if (this.cutInfo) this.cutInfo.textContent = dl
       ? "Dialogue clean-up is ON: only the talking is kept in every ticked part (silence and pauses are removed)."
@@ -783,7 +785,7 @@ export class Studio {
 
   // returns a function that, for ONE part at a time, scans only that part's sound and builds its pieces
   silencePrepare(movie, log, job) {
-    if (!this.sil.on) return null;
+    if (this.mode !== "ai" || !this.sil.on) return null;
     const db = +this.sil.db, mn = +this.sil.min, pad = +this.sil.pad;
     const head = this.dl.head_on ? Math.max(0.5, +this.dl.head_sec || 3) : null;
     return async (plan) => {
@@ -808,12 +810,13 @@ export class Studio {
       const [ovs, txs, auds] = this.localized(p, number);
       const pieces = [[p.start, p.end - p.start]];      // silencePrepare cuts the silence of THIS part when its turn comes
       const mm = Math.floor(p.start / 60), ss = Math.floor(p.start % 60);
-      return { file: `${base}_part${String(number).padStart(2, "0")}_${E.pad2(mm)}m${E.pad2(ss)}s.mp4`, start: p.start, end: p.end, label: p.label || "", pieces, overlays: ovs, texts: txs, audios: auds, number, sil: !!(this.sil.on && p.sil) };
+      return { file: `${base}_part${String(number).padStart(2, "0")}_${E.pad2(mm)}m${E.pad2(ss)}s.mp4`, start: p.start, end: p.end, label: p.label || "", pieces, overlays: ovs, texts: txs, audios: auds, number, sil: !!(this.mode === "ai" && this.sil.on && p.sil) };
     });
   }
 
   async export(withDialogue) {
     if (withDialogue === undefined || withDialogue === null) withDialogue = !!this.dl.on;
+    if (this.mode !== "ai") withDialogue = false;      // Simple Edit: editing only, nothing is cut out
     if (!this.movie) return alertBox("Please choose a video first.");
     if (this.eng) return;
     const chosen = this.parts.map((p, i) => [i, p]).filter(([, p]) => p.on);

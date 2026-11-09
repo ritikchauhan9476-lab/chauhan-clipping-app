@@ -121,15 +121,20 @@ class Studio(ctk.CTkFrame):
         self.dl_on = tk.BooleanVar(value=False)        # dialogue clean-up ON / OFF (same switch in several tabs)
         self.right = ctk.CTkTabview(self, width=410)
         self.right.grid(row=1, column=2, sticky="nsew", padx=(4, 6), pady=(0, 6))
-        for name in ("Aspect & Crop", "Colour", "Overlay", "Text", "Silence", "Export", "Dialogue"):
+        # Simple Edit is only editing (crop, colour, overlay, text, export): no silence cut and no dialogue clean-up.
+        # Those two live in AI Clipping. (Their settings objects are still created, in a hidden frame, so the rest of the
+        # program keeps working; they are never used in Simple Edit.)
+        cutting = self.mode == "ai"
+        for name in ("Aspect & Crop", "Colour", "Overlay", "Text") + (("Silence",) if cutting else ()) + ("Export",) + (("Dialogue",) if cutting else ()):
             self.right.add(name)
         self.build_aspect(self.right.tab("Aspect & Crop"))
         self.build_colour(self.right.tab("Colour"))
         self.build_overlay(self.right.tab("Overlay"))
         self.build_text(self.right.tab("Text"))
-        self.build_silence(self.right.tab("Silence"))
+        hidden = ctk.CTkFrame(self)
+        self.build_silence(self.right.tab("Silence") if cutting else hidden)
         self.build_export(self.right.tab("Export"))
-        self.build_dialogue(self.right.tab("Dialogue"))
+        self.build_dialogue(self.right.tab("Dialogue") if cutting else hidden)
 
     def scroll(self, parent):
         f = ctk.CTkScrollableFrame(parent, fg_color="transparent")
@@ -338,15 +343,16 @@ class Studio(ctk.CTkFrame):
     def build_export(self, tab):
         f = self.scroll(tab)
         self.exp_v = {}
-        ctk.CTkLabel(f, text="CUTTING (ON / OFF)", font=ctk.CTkFont(size=13, weight="bold"),
-                     text_color=NEON).pack(anchor="w", padx=10, pady=(10, 2))
-        ctk.CTkSwitch(f, text="Cut silent pauses", variable=self.sil_on, text_color=TEXT,
-                      command=self.update_cut_info).pack(anchor="w", padx=10, pady=4)
-        ctk.CTkSwitch(f, text="Dialogue clean-up (keep only talking)", variable=self.dl_on, text_color=TEXT,
-                      command=self.update_cut_info).pack(anchor="w", padx=10, pady=4)
-        self.head_row(f)
-        self.cut_info = ctk.CTkLabel(f, text="", text_color=GREY, wraplength=360, justify="left", anchor="w")
-        self.cut_info.pack(fill="x", padx=10, pady=(0, 6))
+        if self.mode == "ai":
+            ctk.CTkLabel(f, text="CUTTING (ON / OFF)", font=ctk.CTkFont(size=13, weight="bold"),
+                         text_color=NEON).pack(anchor="w", padx=10, pady=(10, 2))
+            ctk.CTkSwitch(f, text="Cut silent pauses", variable=self.sil_on, text_color=TEXT,
+                          command=self.update_cut_info).pack(anchor="w", padx=10, pady=4)
+            ctk.CTkSwitch(f, text="Dialogue clean-up (keep only talking)", variable=self.dl_on, text_color=TEXT,
+                          command=self.update_cut_info).pack(anchor="w", padx=10, pady=4)
+            self.head_row(f)
+            self.cut_info = ctk.CTkLabel(f, text="", text_color=GREY, wraplength=360, justify="left", anchor="w")
+            self.cut_info.pack(fill="x", padx=10, pady=(0, 6))
         self.preset_menu = ctk.CTkOptionMenu(f, values=list(E.EXPORT_PRESETS), command=self.apply_export_preset)
         self.preset_menu.set("Quick preset - choose one ...")
         self.preset_menu.pack(fill="x", padx=10, pady=(10, 0))
@@ -426,6 +432,8 @@ class Studio(ctk.CTkFrame):
 
     def update_cut_info(self):
         """Shows what the export button will do with the two switches."""
+        if self.mode != "ai":
+            return
         dl, sl = bool(self.dl_on.get()), bool(self.sil_on.get())
         if dl:
             msg = ("Dialogue clean-up is ON: only the talking is kept in every ticked part (silence and pauses are "
@@ -634,8 +642,9 @@ class Studio(ctk.CTkFrame):
                                                                                    sticky="w")
             sil = tk.BooleanVar(value=bool(p["sil"]))
             sil.trace_add("write", lambda *a, p=p, v=sil: self._set_flag(p, "sil", v))
-            ctk.CTkCheckBox(row, text="cut silence", variable=sil, width=110).grid(row=0, column=1, padx=4,
-                                                                                   pady=(6, 0), sticky="w")
+            if self.mode == "ai":
+                ctk.CTkCheckBox(row, text="cut silence", variable=sil, width=110).grid(row=0, column=1, padx=4,
+                                                                                       pady=(6, 0), sticky="w")
             ctk.CTkButton(row, text="Show", width=60, height=26, fg_color=QUIET, hover_color=QUIET_H,
                           text_color=TEXT, command=lambda i=i: self.select_part(i)).grid(row=0, column=2, padx=4,
                                                                                          pady=(6, 0))
@@ -1262,6 +1271,8 @@ class Studio(ctk.CTkFrame):
     def export(self, with_dialogue=None):
         if with_dialogue is None:
             with_dialogue = bool(self.dl_on.get())
+        if self.mode != "ai":
+            with_dialogue = False                    # Simple Edit: editing only, nothing is cut out
         if not self.movie:
             messagebox.showwarning("Export", "Please choose a movie first.")
             return
@@ -1357,7 +1368,7 @@ class Studio(ctk.CTkFrame):
             number = self.part_number(idx)
             ovs, txs = self.localized(p, number)
             pieces = [(p["start"], p["end"] - p["start"])]       # silence_prepare cuts the silence of this part only, when its turn comes
-            sil_flag = bool(self.sil_on.get() and p["sil"])
+            sil_flag = bool(self.mode == "ai" and self.sil_on.get() and p["sil"])
             mm, ss = divmod(int(p["start"]), 60)
             plans.append(dict(file=f"{base}_part{number:02d}_{mm:02d}m{ss:02d}s.mp4", start=p["start"],
                               end=p["end"], label=p.get("label", ""), pieces=pieces, overlays=ovs, texts=txs,
@@ -1367,7 +1378,7 @@ class Studio(ctk.CTkFrame):
     def silence_prepare(self, movie, log):
         """Returns a function that, for ONE part at a time, scans only that part's sound for silence and builds its
         pieces - so the movie is never scanned as a whole: scan part 1 -> export part 1 -> scan part 2 -> ..."""
-        if not self.sil_on.get():
+        if self.mode != "ai" or not self.sil_on.get():
             return None
         noise, mn, pad = float(self.sil_db.get()), float(self.sil_min.get()), float(self.sil_pad.get())
         head = self.head_seconds() if self.head_on.get() else None

@@ -146,42 +146,22 @@ def main():
         V.locator(".row", has_text="Quality (encoder").locator("select").select_option("Fast (phone)")
         V.locator(".part input[type=checkbox]").nth(0)  # parts panel not shown here
         page.evaluate("() => { const s = window.ccApp.simple; s.parts[1].on = false; s.parts[2].on = false; s.sil.on = true; }")
-        # cutting switches: both OFF = plain parts, nothing removed
-        V.locator(".check", has_text="Cut silent pauses").locator("input").uncheck()
-        assert "Both OFF" in V.locator(".panel .note", has_text="Both OFF").inner_text()
-        V.get_by_role("button", name="EXPORT SELECTED PARTS (PLAIN PARTS)").click()
-        wait_engine(page, "window.ccApp.simple.eng")
-        wait_text(page, 'section.view[data-tab="simple"] .panel .status', "Done", timeout=60)
-        plain_log = V.locator(".panel .log").inner_text()
-        assert "Saved:" in plain_log and "dialogue" not in plain_log.lower(), plain_log[-800:]
-        V.locator(".check", has_text="Dialogue clean-up (keep").locator("input").check()
-        V.get_by_role("button", name="(DIALOGUE CLEAN-UP)").wait_for(timeout=3000)
-        V.locator(".check", has_text="Dialogue clean-up (keep").locator("input").uncheck()
-        V.locator(".check", has_text="Cut silent pauses").locator("input").check()
-        V.get_by_role("button", name="(SILENCE CUT)").wait_for(timeout=3000)
-        V.locator(".check", has_text="Apply only to the first").locator("input").check()
-        assert "first 3 s" in V.locator(".panel .note", has_text="first 3 s").inner_text()
-        V.locator(".check", has_text="Apply only to the first").locator("input").uncheck()
-        shot(page, "08b_cut_switches")
-        # silence export: the sound is scanned PART BY PART (only the part that is exported), never the whole movie
-        V.get_by_role("button", name="(SILENCE CUT)").click()
-        wait_engine(page, "window.ccApp.simple.eng")
-        wait_text(page, 'section.view[data-tab="simple"] .panel .status', "Done", timeout=90)
-        sl = V.locator(".panel .log").inner_text()
-        assert "Silence: scanning only this part" in sl and "Saved:" in sl and "whole movie" not in sl, sl[-800:]
+        # Simple Edit = editing only: no Silence / Dialogue tabs, no cutting switches, no "cut silence" ticks
+        names = page.evaluate("() => [...document.querySelectorAll('section.view[data-tab=simple] .chips .chip')].map(c => c.textContent)")
+        assert "Silence" not in names and "Dialogue" not in names and "Export" in names and "Colour" in names, names
+        assert V.locator(".check", has_text="Cut silent pauses").count() == 0
+        assert V.locator(".check", has_text="Apply only to the first").count() == 0
         V.get_by_role("button", name="EXPORT SELECTED PARTS").click()
         wait_engine(page, "window.ccApp.simple.eng")
         wait_text(page, 'section.view[data-tab="simple"] .panel .status', "Done", timeout=60)
         shot(page, "09_exported")
         log = V.locator(".panel .log").inner_text()
-        assert "Saved:" in log, log[-800:]
-        # dialogue export of part 1
-        V.locator(".chip", has_text="Dialogue").click()
-        V.get_by_role("button", name="EXPORT TICKED PARTS WITH DIALOGUE CLEAN-UP").click()
-        wait_engine(page, "window.ccApp.simple.eng")
-        log = V.locator(".panel .log").inner_text()
-        assert "dialogue pieces" in log and "Saved:" in log, log[-800:]
-        shot(page, "10_dialogue")
+        assert "Saved:" in log and "Silence" not in log and "dialogue" not in log.lower(), log[-800:]
+        # the cutting tools are in AI Clipping
+        page.locator(".navbtn", has_text="AI Clipping").click()
+        ai_names = page.evaluate("() => [...document.querySelectorAll('section.view[data-tab=ai] .chips .chip')].map(c => c.textContent)")
+        assert "Silence" in ai_names and "Dialogue" in ai_names, ai_names
+        page.locator(".navbtn", has_text="Simple Edit").click()
         # project save as
         page.locator(".topbar .btn", has_text="Save").click()
         page.wait_for_selector(".modal input")
