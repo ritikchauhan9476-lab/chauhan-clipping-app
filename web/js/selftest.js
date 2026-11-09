@@ -7,6 +7,8 @@ import * as D from "./dialogue.js";
 const log = (m) => console.log("SELFTEST " + m);
 
 export async function runSelfTest(app) {
+  if (globalThis.__selftestStarted) return;      // started twice (page events): two runs would write the same files
+  globalThis.__selftestStarted = true;
   try {
     const info0 = await bridge().appInfo();
     log("app " + JSON.stringify(info0));
