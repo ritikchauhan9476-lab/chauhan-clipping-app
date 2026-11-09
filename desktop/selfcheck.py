@@ -144,6 +144,21 @@ def t_plain_export():
     return f"6.0s part, {d:.2f}s"
 
 
+def t_many_pieces():
+    import engine as E
+    cpu = [c for c in E.CODECS if "CPU" in c][0]
+    s = E.sanitize({"resolution": "480p", "codec": cpu, "rate_mode": E.RATE_MODES[0], "bitrate": 2000})
+    out = os.path.join(tmp, "out_many")
+    pieces = [(i * 0.02, 0.31) for i in range(400)]          # a graph of ~100 000 characters
+    plans = [dict(file="many.mp4", start=0.0, end=12.0, label="", pieces=pieces, overlays=[], texts=[], number=1, single_pass=True)]
+    logs = []
+    eng = E.StudioEngine(s, logs.append, lambda fr, t: None, lambda c: None)
+    eng.process(movie, plans, out)
+    f = os.path.join(out, "many.mp4")
+    assert os.path.exists(f) and os.path.getsize(f) > 5000, "\n".join(map(str, logs))[-800:]
+    return f"{os.path.getsize(f) // 1024} KB from 400 pieces"
+
+
 def t_silero():
     import dialogue
     p = dialogue.silero_model_path()
@@ -170,6 +185,7 @@ step("silence scan of only the start of parts", t_silence_windows)
 step("window and Cutting ON/OFF switches", t_window)
 step("silence cut, one part at a time", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)
+step("400 pieces in one clip (long filter graph)", t_many_pieces)
 step("Silero speech detection", t_silero)
 if os.path.isfile(os.path.join(HERE, "models", "whisper-small", "model.bin")):
     os.environ["HF_HUB_OFFLINE"] = "1"

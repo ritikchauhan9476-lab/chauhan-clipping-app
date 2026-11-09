@@ -329,6 +329,18 @@ export function frameGeometry(s, info, crop) {
 // finish > overlays > text > audio.
 // pieces=[[abs_start, length], ...]: keep only these pieces of the movie and join them in one pass (dialogue
 // cut / Auto Short). Overlay, text and audio times are then relative to the START OF THE JOINED CLIP.
+let _ffNew = null;
+async function ffNewSyntax() {
+  if (_ffNew === null) {
+    try {
+      const v = await ffrun(["-hide_banner", "-version"]);
+      const m = /version\s+n?(\d+)\./.exec(v.stdout || "");
+      _ffNew = m ? +m[1] >= 7 : true;
+    } catch (e) { _ffNew = true; }
+  }
+  return _ffNew;
+}
+
 export async function buildCommand(movie, start, dur, out, sIn, info, { crop = null, codec = null, pieces = null, tmpDir = "" } = {}) {
   const s = sanitize(sIn);
   const inp = [], fl = [], tmp = [];
@@ -502,7 +514,15 @@ export async function buildCommand(movie, start, dur, out, sIn, info, { crop = n
   if (ssBase !== null) cmd.push("-ss", ssBase.toFixed(3), "-t", readLen.toFixed(3), "-i", movie);
   else cmd.push("-ss", start.toFixed(2), "-t", dur.toFixed(2), "-i", movie);
   for (const a of inp) cmd.push(...a);
-  cmd.push("-filter_complex", fl.join(";"), "-map", "[vout]", ...amap, "-t", dur.toFixed(3),
+  // a very long graph (a movie with hundreds of dialogue pieces) does not fit on the command line: pass it as a file
+  const graph = fl.join(";");
+  if (graph.length > 20000) {
+    const gp = join(tmpDir || ".", `graph_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.txt`);
+    await bridge().writeText(gp, graph);
+    tmp.push(gp);
+    cmd.push((await ffNewSyntax()) ? "-/filter_complex" : "-filter_complex_script", gp);
+  } else cmd.push("-filter_complex", graph);
+  cmd.push("-map", "[vout]", ...amap, "-t", dur.toFixed(3),
     ...encoderArgs(s, codec), "-movflags", "+faststart", "-f", "mp4", out);
   return { cmd, tmp, dur, OW, OH };
 }

@@ -482,6 +482,30 @@ def pieces_graph(pieces, base, fr, has_audio, fade=0.02):
     return fl, "[vcat]", ("[acat]" if has_audio else None), total
 
 
+_FF_NEW_SYNTAX = None
+
+
+def filter_complex_args(graph, tmp):
+    """The filter graph as ffmpeg arguments. A long graph (hundreds of dialogue pieces) does not fit on the Windows
+    command line (32 767 characters: 'filename or extension is too long'), so it is written to a file instead."""
+    global _FF_NEW_SYNTAX
+    if len(graph) < 12000:
+        return ["-filter_complex", graph]
+    if _FF_NEW_SYNTAX is None:
+        try:
+            v = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, errors="ignore",
+                               creationflags=NOWIN).stdout
+            m = re.search(r"version\s+n?(\d+)\.", v)
+            _FF_NEW_SYNTAX = (int(m.group(1)) >= 7) if m else True       # git builds ("N-12345-g...") are new
+        except Exception:
+            _FF_NEW_SYNTAX = True
+    fd, path = tempfile.mkstemp(prefix="cc_graph_", suffix=".txt")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(graph)
+    tmp.append(path)
+    return ["-/filter_complex", path] if _FF_NEW_SYNTAX else ["-filter_complex_script", path]
+
+
 def build_command(movie, start, dur, out, s, info, crop=None, codec=None, preview_t=None, pieces=None):
     """One ffmpeg command for the clip [start, start+dur]. Timeline items are movie-absolute and are
     shifted to clip time here. Order: auto-crop > colour > chroma > aspect/crop > overlays > text > audio.
@@ -727,7 +751,7 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
         cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-ss", f"{start:.2f}", "-t", f"{dur:.2f}", "-i", movie]
     for a in inp:
         cmd += a
-    cmd += ["-filter_complex", ";".join(fl), "-map", "[vout]"]
+    cmd += filter_complex_args(";".join(fl), tmp) + ["-map", "[vout]"]
     if preview_t is not None:
         cmd += ["-an", "-ss", f"{preview_t:.2f}", "-frames:v", "1", "-q:v", "3", out]
     else:

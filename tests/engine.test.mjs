@@ -143,6 +143,18 @@ await test("silence scan of only the start of parts (windows) matches the full s
   assert.deepEqual(await E.detectSilence(media.movie, -35, 2, 10, null, []), []);
 });
 
+await test("300 dialogue pieces in one clip (graph too long for a command line)", async () => {
+  const pieces = [];
+  for (let i = 0; i < 300; i++) pieces.push([i * 0.35, 0.3]);
+  const s = E.sanitize({ codec: "H.264 (CPU)", quality: "Fast (phone)", bitrate: 2000, resolution: "480p" });
+  const out = path.join(paths.out, "many_pieces.mp4");
+  const r = new E.Runner(s, log, null, null, paths.cache);
+  const ok = await r.cut(media.movie, pieces[0][0], 0, out, info, null, null, pieces);
+  assert.ok(ok, "export with 300 pieces failed");
+  const p = probe(out);
+  assert.ok(Math.abs(+p.format.duration - 300 * 0.3) < 1.5, p.format.duration);
+});
+
 await test("studio engine: parts with silence cut joined + numbering", async () => {
   const sil = await E.detectSilence(media.movie, -35, 2, info.duration);
   const s = E.sanitize({ codec: "H.264 (CPU)", quality: "Fast (phone)", bitrate: 3000, resolution: "480p" });
