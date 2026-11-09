@@ -101,6 +101,32 @@ def t_window():
     return f"{len(studios)} studio(s)"
 
 
+def t_silence_per_part():
+    import app as A
+    import studio as S
+    w = A.App()
+    w.update()
+
+    def walk(x):
+        yield x
+        for c in x.winfo_children():
+            yield from walk(c)
+    st = [x for x in walk(w) if isinstance(x, S.Studio)][0]
+    st.sil_on.set(True); st.sil_min.set(0.5); st.head_on.set(False)
+    logs = []
+    prep = st.silence_prepare(movie, logs.append)
+    plan = dict(file="x.mp4", start=0.0, end=12.0, pieces=[(0.0, 12.0)], sil=True)
+    out = prep(plan)
+    kept = sum(d for _, d in out["pieces"])
+    assert 0 < kept < 11.5, f"silence not cut for this part: kept {kept}s"
+    assert prep(dict(plan, sil=False))["pieces"] == [(0.0, 12.0)]
+    st.head_on.set(True); st.head_sec.set("4")
+    out2 = st.silence_prepare(movie, logs.append)(plan)
+    assert out2["pieces"][-1] == (4.0, 8.0), out2["pieces"]
+    w.destroy()
+    return f"kept {kept:.1f}s of 12s; first-4s mode keeps the tail 4.0-12.0"
+
+
 def t_plain_export():
     import engine as E
     cpu = [c for c in E.CODECS if "CPU" in c][0]
@@ -142,6 +168,7 @@ step("ffmpeg + test movie", t_ffmpeg)
 step("all modules import", t_modules)
 step("silence scan of only the start of parts", t_silence_windows)
 step("window and Cutting ON/OFF switches", t_window)
+step("silence cut, one part at a time", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)
 step("Silero speech detection", t_silero)
 if os.path.isfile(os.path.join(HERE, "models", "whisper-small", "model.bin")):

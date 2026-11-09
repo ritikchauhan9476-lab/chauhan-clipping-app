@@ -163,6 +163,12 @@ def main():
         assert "first 3 s" in V.locator(".panel .note", has_text="first 3 s").inner_text()
         V.locator(".check", has_text="Apply only to the first").locator("input").uncheck()
         shot(page, "08b_cut_switches")
+        # silence export: the sound is scanned PART BY PART (only the part that is exported), never the whole movie
+        V.get_by_role("button", name="(SILENCE CUT)").click()
+        wait_engine(page, "window.ccApp.simple.eng")
+        wait_text(page, 'section.view[data-tab="simple"] .panel .status', "Done", timeout=90)
+        sl = V.locator(".panel .log").inner_text()
+        assert "Silence: scanning only this part" in sl and "Saved:" in sl and "whole movie" not in sl, sl[-800:]
         V.get_by_role("button", name="EXPORT SELECTED PARTS").click()
         wait_engine(page, "window.ccApp.simple.eng")
         wait_text(page, 'section.view[data-tab="simple"] .panel .status', "Done", timeout=60)

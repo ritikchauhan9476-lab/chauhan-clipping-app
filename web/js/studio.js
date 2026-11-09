@@ -781,17 +781,34 @@ export class Studio {
       pad_ms: parseInt(d.pad, 10), min_sil_ms: parseInt(d.minsil, 10), min_piece: +d.minpiece, scan_picture: !!d.scan, whisper_model: d.model };
   }
 
+  // returns a function that, for ONE part at a time, scans only that part's sound and builds its pieces
+  silencePrepare(movie, log, job) {
+    if (!this.sil.on) return null;
+    const db = +this.sil.db, mn = +this.sil.min, pad = +this.sil.pad;
+    const head = this.dl.head_on ? Math.max(0.5, +this.dl.head_sec || 3) : null;
+    return async (plan) => {
+      if (!plan.sil) return plan;
+      const a = plan.start, b = plan.end;
+      const he = head !== null && a + head < b - 0.05 ? a + head : null;
+      const scanEnd = he ?? b;
+      log(`Silence: scanning only this part (${a.toFixed(1)}s - ${scanEnd.toFixed(1)}s) ...`);
+      const sil = await E.detectSilence(movie, db, mn, null, job, [[a, scanEnd]]);
+      const keep = E.silenceKeepRanges(sil, a, scanEnd, pad, 0.3);
+      const pieces = he !== null ? [...keep, [he, b - he]] : keep;
+      log(`  ${sil.length} silent stretch(es) found, ${((b - a) - pieces.reduce((x, [, d]) => x + d, 0)).toFixed(1)}s removed`);
+      return { ...plan, pieces };
+    };
+  }
+
   buildPlans(chosen) {
     const base = E.fileBase(this.movie);
     const pad = +this.sil.pad;
     return chosen.map(([idx, p]) => {
       const number = this.partNumber(idx);
       const [ovs, txs, auds] = this.localized(p, number);
-      const pieces = this.sil.on && p.sil
-        ? this.withTail(E.silenceKeepRanges(this.silList, p.start, this.headEnd(p.start, p.end) ?? p.end, pad, 0.3), p.start, p.end)
-        : [[p.start, p.end - p.start]];
+      const pieces = [[p.start, p.end - p.start]];      // silencePrepare cuts the silence of THIS part when its turn comes
       const mm = Math.floor(p.start / 60), ss = Math.floor(p.start % 60);
-      return { file: `${base}_part${String(number).padStart(2, "0")}_${E.pad2(mm)}m${E.pad2(ss)}s.mp4`, start: p.start, end: p.end, label: p.label || "", pieces, overlays: ovs, texts: txs, audios: auds, number };
+      return { file: `${base}_part${String(number).padStart(2, "0")}_${E.pad2(mm)}m${E.pad2(ss)}s.mp4`, start: p.start, end: p.end, label: p.label || "", pieces, overlays: ovs, texts: txs, audios: auds, number, sil: !!(this.sil.on && p.sil) };
     });
   }
 
@@ -804,11 +821,8 @@ export class Studio {
     if (!chosen.length) return alertBox("No part is selected. Tick at least one part.");
     for (const [i, p] of chosen) if (p.end <= p.start + 0.5 || p.start < 0 || p.end > this.dur + 0.05) return alertBox(`Part ${i + 1} has invalid times. Check its Start and End.`);
     const dl = withDialogue ? this.dialogueOpts() : null;
-    const needsSilence = !withDialogue && this.sil.on && chosen.some(([, p]) => p.sil);
-    if (needsSilence && JSON.stringify(this.silKey) !== JSON.stringify(this.scanKey())) {
-      if (this.expProg) this.expProg.set(0, "Scanning silence first, then exporting ...");
-      if (!(await this.scanSilence())) return;
-    }
+    // silence is NOT scanned for the whole movie: every part is scanned only when its turn comes
+    // (scan this part -> export it -> next part), see silencePrepare
     const s = E.sanitize(this.cfg);
     if (withDialogue) { s.fade_sec = D.FADE; s._joint_fade = D.FADE; s._denoise = !!dl.denoise; }
     for (const k of ENCODE_KEYS) this.app.lastEncode[k] = s[k];
@@ -824,7 +838,7 @@ export class Studio {
     this.expGo.disabled = true; this.expStop.disabled = false;
     await bridge().keepAwake(true, "Chauhan Clipping", "Exporting your parts ...");
     const movie = this.movie, tmp = this.app.paths.cache, log = (m) => this.expLog.add(m);
-    let prepare = null;
+    let prepare = withDialogue ? null : this.silencePrepare(movie, log, eng.job);
     if (dl) {
       prepare = async (plan) => {
         log(`Dialogue: finding the talking in ${plan.file} (${plan.start.toFixed(1)}s - ${plan.end.toFixed(1)}s)`);
@@ -856,9 +870,6 @@ export class Studio {
     if (this.eng) return alertBox("Wait until the current export or preview has finished.");
     const chosen = whole ? this.parts.map((p, i) => [i, p]).filter(([, p]) => p.on) : [[this.partIdx, this.currentPart()]];
     if (!chosen.length) return alertBox("No part is selected.");
-    if (this.sil.on && chosen.some(([, p]) => p.sil) && JSON.stringify(this.silKey) !== JSON.stringify(this.scanKey()) && this.parts.length) {
-      if (!(await this.scanSilence())) return;
-    }
     const s = E.sanitize(this.cfg);
     s._fast = true;
     s.resolution = "480p";
@@ -871,7 +882,7 @@ export class Studio {
     this.eng = eng;
     this.expGo.disabled = true; this.expStop.disabled = false;
     try {
-      await eng.process(this.movie, plans, out);
+      await eng.process(this.movie, plans, out, this.silencePrepare(this.movie, (m) => this.expLog.add(m), eng.job));
       const files = [];
       for (const p of plans) { const f = E.join(out, p.file); if (await bridge().exists(f)) files.push(f); }
       if (!files.length) throw new Error("No preview could be rendered (see the log).");

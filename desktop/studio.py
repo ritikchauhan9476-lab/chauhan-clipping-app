@@ -1280,11 +1280,8 @@ class Studio(ctk.CTkFrame):
         except ValueError as e:
             messagebox.showerror("Dialogue", str(e))
             return
-        needs_silence = (not with_dialogue) and self.sil_on.get() and any(p["sil"] for p in chosen)
-        if needs_silence and self.sil_key != self.scan_key():
-            self.exp_status_set("Scanning silence first, then exporting...")
-            self.scan_silence(then=lambda: self.export(with_dialogue))
-            return
+        # silence is NOT scanned for the whole movie any more: every part is scanned only when its turn comes
+        # (scan this part -> export it -> next part), see silence_prepare
         try:
             self.sync_export()
             s = E.sanitize(dict(self.cfg))
@@ -1316,11 +1313,12 @@ class Studio(ctk.CTkFrame):
 
         def log(m):
             self.q.put(("elog", m))
+        sil_prep = None if with_dialogue else self.silence_prepare(movie, log)
 
         def work():
             work_dir = os.path.join(out_dir, "_dialogue_work")
             try:
-                prepare = None
+                prepare = sil_prep
                 if dl_opts:
                     def prepare(plan):
                         log(f"Dialogue: finding the talking in {plan['file']} "
@@ -1358,16 +1356,35 @@ class Studio(ctk.CTkFrame):
         for idx, p in chosen:
             number = self.part_number(idx)
             ovs, txs = self.localized(p, number)
-            if self.sil_on.get() and p["sil"]:
-                he = self.head_end(p["start"], p["end"])
-                pieces = self.with_tail(E.silence_keep_ranges(self.sil_list, p["start"], he or p["end"], pad, 0.3), p["start"], p["end"])
-            else:
-                pieces = [(p["start"], p["end"] - p["start"])]
+            pieces = [(p["start"], p["end"] - p["start"])]       # silence_prepare cuts the silence of this part only, when its turn comes
+            sil_flag = bool(self.sil_on.get() and p["sil"])
             mm, ss = divmod(int(p["start"]), 60)
             plans.append(dict(file=f"{base}_part{number:02d}_{mm:02d}m{ss:02d}s.mp4", start=p["start"],
                               end=p["end"], label=p.get("label", ""), pieces=pieces, overlays=ovs, texts=txs,
-                              number=number))
+                              number=number, sil=sil_flag))
         return plans
+
+    def silence_prepare(self, movie, log):
+        """Returns a function that, for ONE part at a time, scans only that part's sound for silence and builds its
+        pieces - so the movie is never scanned as a whole: scan part 1 -> export part 1 -> scan part 2 -> ..."""
+        if not self.sil_on.get():
+            return None
+        noise, mn, pad = float(self.sil_db.get()), float(self.sil_min.get()), float(self.sil_pad.get())
+        head = self.head_seconds() if self.head_on.get() else None
+
+        def prep(plan):
+            if not plan.get("sil"):
+                return plan
+            a, b = plan["start"], plan["end"]
+            he = a + head if head is not None and a + head < b - 0.05 else None
+            scan_end = he or b
+            log(f"Silence: scanning only this part ({a:.1f}s - {scan_end:.1f}s) ...")
+            sil = E.detect_silence(movie, noise, mn, None, [(a, scan_end)])
+            keep = E.silence_keep_ranges(sil, a, scan_end, pad, 0.3)
+            pieces = keep + ([(he, b - he)] if he else [])
+            log(f"  {len(sil)} silent stretch(es) found, {(b - a) - sum(d for _, d in pieces):.1f}s removed")
+            return dict(plan, pieces=pieces)
+        return prep
 
     def exp_status_set(self, text):
         self.exp_status.configure(text=text)
@@ -1385,9 +1402,6 @@ class Studio(ctk.CTkFrame):
         if not chosen:
             messagebox.showwarning("Preview", "No part is selected.")
             return
-        if self.sil_on.get() and any(p["sil"] for _, p in chosen) and self.sil_key != self.scan_key():
-            messagebox.showinfo("Preview", "Scan the silence first (Silence tab), then preview again.")
-            return
         s = E.sanitize(dict(self.cfg))
         s["_fast"] = True
         plans = self.build_plans(chosen)
@@ -1400,9 +1414,11 @@ class Studio(ctk.CTkFrame):
                                   lambda fr, t: self.q.put(("eprog", (fr, t))), lambda c: None)
         movie, eng = self.movie, self.eng
 
+        prev_prep = self.silence_prepare(movie, lambda m: self.q.put(("elog", m)))
+
         def work():
             try:
-                eng.process(movie, plans, out_dir)
+                eng.process(movie, plans, out_dir, prepare=prev_prep)
                 files = [os.path.join(out_dir, p["file"]) for p in plans]
                 files = [f for f in files if os.path.isfile(f)]
                 if not files:
