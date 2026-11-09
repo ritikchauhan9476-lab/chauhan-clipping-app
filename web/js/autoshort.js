@@ -108,12 +108,16 @@ export class AutoShortJob {
     this.spanTotal = Math.max(1, this.ranges.reduce((a, [x, y]) => a + (y - x), 0));
     this.spanDone = 0;
     await this.mark(this.ranges[0][0]);
+    let carry = [];
     for (let ri = 0; ri < this.ranges.length; ri++) {
       if (this.stopped) break;
       this.ri = ri;
       const [a, b] = this.ranges[ri];
       if (this.ranges.length > 1) this.log(`--- Range ${ri + 1}/${this.ranges.length}: ${E.mmss(a)} - ${E.mmss(b)} ---`);
-      await this.scanRange(a, b);
+      // ranges that follow each other directly (e.g. many 45 s parts) are one stretch of movie: the dialogue left over
+      // at the end of one range goes on into the next range instead of being thrown away
+      const joins = ri + 1 < this.ranges.length && Math.abs(this.ranges[ri + 1][0] - b) < 1;
+      carry = (await this.scanRange(a, b, carry, !joins)) || [];
       if (this.stopped) break;
       this.spanDone += b - a;
       if (ri + 1 < this.ranges.length) { this.ri = ri + 1; await this.mark(this.ranges[ri + 1][0]); }
@@ -125,9 +129,9 @@ export class AutoShortJob {
     return this.made;
   }
 
-  async scanRange(a, b) {
+  async scanRange(a, b, carry = [], flush = true) {
     const cap = pieceCap(this.minLen, this.maxLen);
-    let buf = [], t = a;
+    let buf = [...carry], t = a;
     while (t < b - 0.5 && !this.stopped) {
       const cEnd = Math.min(b, t + this.chunk);
       let info;
@@ -158,6 +162,10 @@ export class AutoShortJob {
         if (!(await this.render(group))) buf = [...group, ...buf];   // stopped in the middle: still to do
         await this.mark(buf.length ? Math.min(buf[0][0], t) : t);
       }
+    }
+    if (!flush && !this.stopped) {
+      if (buf.length) this.log(`${totalLen(buf).toFixed(0)}s of dialogue carried on into the next range (not enough for a short yet).`);
+      return buf;
     }
     while (buf.length && !this.stopped) {
       const g = pickGroup(buf, this.minLen, this.maxLen, true);

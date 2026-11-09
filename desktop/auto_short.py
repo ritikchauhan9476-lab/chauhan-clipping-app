@@ -126,13 +126,17 @@ class AutoShortJob:
         self.span_done = 0.0
         self.mark(self.ranges[0][0])
         try:
+            carry = []
             for ri, (a, b) in enumerate(self.ranges):
                 if self.stopped:
                     break
                 self.ri = ri
                 if len(self.ranges) > 1:
                     self.log(f"--- Range {ri + 1}/{len(self.ranges)}: {_mmss(a)} - {_mmss(b)} ---")
-                self.scan_range(a, b)
+                # ranges that follow each other directly (e.g. many 45 s parts) are one stretch of movie: the dialogue
+                # left over at the end of one range goes on into the next range instead of being thrown away
+                joins = ri + 1 < len(self.ranges) and abs(self.ranges[ri + 1][0] - b) < 1.0
+                carry = self.scan_range(a, b, carry, flush=not joins) or []
                 if self.stopped:
                     break
                 self.span_done += b - a
@@ -151,9 +155,9 @@ class AutoShortJob:
         self.log(f"Finished. {self.made} short(s) in: {self.out_dir}")
         return self.made
 
-    def scan_range(self, a, b):
+    def scan_range(self, a, b, carry=None, flush=True):
         cap = piece_cap(self.min_len, self.max_len)
-        buf, t = [], a
+        buf, t = list(carry or []), a
         while t < b - 0.5 and not self.stopped:
             c_end = min(b, t + self.chunk)
             info = D.find_speech(self.movie, t, c_end, self.opts, self.work, self.log)
@@ -180,7 +184,11 @@ class AutoShortJob:
                 if not self.render(group):                      # stopped in the middle: the group is still to do
                     buf = group + buf
                 self.mark(min(buf[0][0], t) if buf else t)
-        # end of this range: whatever is left
+        if not flush and not self.stopped:
+            if buf:
+                self.log(f"{total_len(buf):.0f}s of dialogue carried on into the next range (not enough for a short yet).")
+            return buf
+        # end of this stretch of movie: whatever is left
         while buf and not self.stopped:
             g = pick_group(buf, self.min_len, self.max_len, final=True)
             if g:

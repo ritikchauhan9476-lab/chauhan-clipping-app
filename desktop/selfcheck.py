@@ -159,6 +159,31 @@ def t_many_pieces():
     return f"{os.path.getsize(f) // 1024} KB from 400 pieces"
 
 
+def t_autoshort_carry():
+    import auto_short as AS
+    import dialogue as D
+    job = object.__new__(AS.AutoShortJob)
+    
+    made, logs = [], []
+    job.min_len, job.max_len, job.chunk, job.opts, job.movie, job.work = 30.0, 40.0, 60.0, {}, "m.mp4", tmp
+    job.stopped, job.keep_last, job.span_total, job.span_done, job.made = False, False, 1.0, 0.0, 0
+    job.log, job.progress = logs.append, lambda *a: None
+    job.mark = lambda *a, **k: None
+    job.render = lambda group: (made.append(list(group)) or True)
+
+    def fake(movie, a, b, opts, work, log):                     # 20 s of talking in every 45 s range
+        return dict(regions=[(a + 2.0, a + 22.0)], contour=None, detector="fake")
+    D.find_speech = fake
+    D.split_long = lambda regs, contour, cap: regs
+    ranges = [[i * 45.0, (i + 1) * 45.0] for i in range(6)]
+    carry = []
+    for ri, (a, b) in enumerate(ranges):
+        joins = ri + 1 < len(ranges) and abs(ranges[ri + 1][0] - b) < 1.0
+        carry = job.scan_range(a, b, carry, flush=not joins) or []
+    assert made, "no short made from 6 contiguous 45 s ranges:\n" + "\n".join(logs)
+    return f"{len(made)} short(s) from 6 x 45 s ranges with 20 s of talking each"
+
+
 def t_silero():
     import dialogue
     p = dialogue.silero_model_path()
@@ -186,6 +211,7 @@ step("window and Cutting ON/OFF switches", t_window)
 step("silence cut, one part at a time", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)
 step("400 pieces in one clip (long filter graph)", t_many_pieces)
+step("auto short: dialogue carried on between ranges", t_autoshort_carry)
 step("Silero speech detection", t_silero)
 if os.path.isfile(os.path.join(HERE, "models", "whisper-small", "model.bin")):
     os.environ["HF_HUB_OFFLINE"] = "1"

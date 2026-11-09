@@ -167,6 +167,22 @@ await test("studio engine: parts with silence cut joined + numbering", async () 
   assert.equal(done, 2);
 });
 
+await test("auto short: many short ranges that follow each other still make shorts (dialogue carried on)", async () => {
+  const outDir = path.join(paths.out, "auto_carry");
+  fs.rmSync(outDir, { recursive: true, force: true });
+  const s = E.sanitize({ codec: "H.264 (CPU)", quality: "Fast (phone)", bitrate: 3000, resolution: "480p", aspect: "9:16" });
+  const logs = [], made = [];
+  const ranges = []; for (let t = 0; t < 120; t += 15) ranges.push([t, t + 15]);
+  const job = new A.AutoShortJob({
+    movie: media.movie, opts: { pad_ms: 150, min_sil_ms: 300, min_piece: 1, denoise: true, vad: true }, settings: s, items: [],
+    outDir, tmpDir: paths.cache, log: (m) => logs.push(m), progress: () => {}, minLen: 30, maxLen: 40, chunk: 60,
+    onShort: (d) => made.push(d), onResume: () => {}, ranges,
+  });
+  await job.run();
+  assert.ok(made.length >= 1, "no short from 8 contiguous 15 s ranges:\n" + logs.join("\n"));
+  assert.ok(logs.some((l) => /carried on into the next range/.test(l)), "no carry-over logged");
+});
+
 await test("auto short: stop after the first short, then continue", async () => {
   const outDir = path.join(paths.out, "auto");
   fs.rmSync(outDir, { recursive: true, force: true });
