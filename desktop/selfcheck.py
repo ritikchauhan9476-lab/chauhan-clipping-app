@@ -227,9 +227,10 @@ def t_clean_start_and_overlay_flags():
     st.items = [dict(E.OVERLAY_DEFAULT, kind="overlay", path=png, rel_start=0.0, rel_end=0.0)] \
         if hasattr(E, "OVERLAY_DEFAULT") else [dict(kind="overlay", path=png, rel_start=0.0, rel_end=0.0)]
     st.parts = [{"on": True, "sil": True, "ov": True, "start": 2.0, "end": 8.0, "label": ""},
-                {"on": True, "sil": True, "ov": False, "start": 8.0, "end": 12.0, "label": ""}]
+                {"on": True, "sil": True, "ov": False, "start": 9.0, "end": 12.0, "label": ""}]
     plans = st.build_plans([(0, st.parts[0]), (1, st.parts[1])])
     assert len(plans[0]["overlays"]) == 1 and plans[1]["overlays"] == [], [len(p["overlays"]) for p in plans]
+    shutil.rmtree(os.path.join(E.OUTPUT_DIR, f"{st.file_base()}_simple"), ignore_errors=True)   # leftovers of the earlier test
     st.trim_on.set(True)
     st.trim_voice.set(False)
     st.trim_sec.set("3")
@@ -248,7 +249,7 @@ def t_clean_start_and_overlay_flags():
     d = [float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", os.path.join(out, f)],
                               capture_output=True, text=True).stdout.strip()) for f in files]
     assert 5.0 < d[0] < 5.6, ("part 1 starts in silence: about 0.9 s must be cut from 6 s", d, log[-600:])
-    assert abs(d[1] - 4.0) < 0.5, ("part 2 starts with talking: untouched", d, log[-600:])
+    assert abs(d[1] - 3.0) < 0.5, ("part 2 starts with talking: untouched", d, log[-600:])
     assert "Clean start" in log, log[-500:]
     w.destroy()
     return f"start trimmed ({d[0]:.1f}s of 6.0s), second part untouched ({d[1]:.1f}s), overlay only on ticked video"
