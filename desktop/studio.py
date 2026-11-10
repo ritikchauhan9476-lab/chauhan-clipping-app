@@ -352,10 +352,12 @@ class Studio(ctk.CTkFrame):
         except ValueError:
             return 3.0
 
-    def trim_one(self, movie, a, b, log):
+    @staticmethod
+    def trim_one(movie, a, b, seconds, voice, log):
+        """No tkinter variables in here: this runs in a worker thread."""
         work = os.path.join(E.OUTPUT_DIR, "_trim_work")
         try:
-            return dialogue.trim_start(movie, a, b, self.trim_seconds(), bool(self.trim_voice.get()), -35.0, work, log)
+            return dialogue.trim_start(movie, a, b, seconds, voice, -35.0, work, log)
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
@@ -365,11 +367,12 @@ class Studio(ctk.CTkFrame):
             return
         part = dict(self.current_part())
         movie, n = self.movie, self.part_idx + 1
+        secs, voice = self.trim_seconds(), bool(self.trim_voice.get())
         self.trim_result.configure(text="Checking the start of the shown part ...")
 
         def work():
             try:
-                new, why = self.trim_one(movie, part["start"], part["end"], lambda m: None)
+                new, why = self.trim_one(movie, part["start"], part["end"], secs, voice, lambda m: None)
                 self.q.put(("trim", f"Part {n}: " + (f"starts {new - part['start']:.2f} s later - {why}"
                                                       if new > part["start"] else why)))
             except Exception as e:
@@ -382,9 +385,11 @@ class Studio(ctk.CTkFrame):
         if self.mode != "simple" or not self.trim_on.get():
             return None
 
+        secs, voice = self.trim_seconds(), bool(self.trim_voice.get())      # read here: prep runs in a worker thread
+
         def prep(plan):
             a, b = plan["start"], plan["end"]
-            new, why = self.trim_one(movie, a, b, log)
+            new, why = self.trim_one(movie, a, b, secs, voice, log)
             if new <= a:
                 log(f"Clean start: {plan['file']} - {why}")
                 return plan
