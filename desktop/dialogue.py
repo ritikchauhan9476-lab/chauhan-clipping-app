@@ -409,6 +409,36 @@ def analyze(movie, start, end, opts, work_dir, log):
     return pieces, None
 
 
+def trim_start(movie, a, b, seconds, voice, noise_db, work_dir, log):
+    """Simple Edit 'clean start': where should a part really start? Looks ONLY at the first `seconds` seconds (plus a
+    little margin) of the part [a, b] - the rest of the video is never touched. If the part begins with silence (or,
+    with voice=True, with anything that is not talking: music, noise) that is cut, but never more than `seconds`.
+    Returns (new_start, info_text); new_start == a when nothing needs cutting."""
+    seconds = max(0.5, float(seconds))
+    win_end = min(b, a + seconds + 1.5)
+    if win_end - a < 1.0:
+        return a, "part too short, left as it is"
+    lead, how = 0.0, ""
+    if voice:
+        opts = dict(pad_ms=100, min_sil_ms=300, min_piece=0.3, vad=True, whisper=False, scan_picture=False)
+        info = find_speech(movie, a, win_end, opts, work_dir, log)
+        if str(info["detector"]).startswith("off"):
+            voice = False                                    # no voice detector available: fall back to silence
+        else:
+            regs = [r for r in info["regions"] if r[1] - r[0] >= 0.15]
+            lead = (regs[0][0] - a) if regs else seconds     # nobody talks in the window: all of it is "not talking"
+            how = "first words"
+    if not voice:
+        sil = E.detect_silence(movie, noise_db, 0.3, None, [(a, win_end)])
+        first = next((x for x in sil if x[0] <= a + 0.15), None)
+        lead = max(0.0, first[1] - a - 0.12) if first else 0.0
+        how = "end of the silence"
+    lead = min(lead, seconds)
+    if lead < 0.25 or (b - a - lead) < 1.0:
+        return a, "starts with talking already"
+    return a + lead, f"{lead:.2f}s cut ({how})"
+
+
 # ------------------------------------------------------------------ helpers for building clips
 def quietest_point(contour, lo, hi):
     """Time in [lo, hi] (movie seconds) where the sound is quietest (smoothed over ~90 ms)."""

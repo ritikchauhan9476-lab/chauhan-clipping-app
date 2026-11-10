@@ -195,6 +195,65 @@ def t_simple_export_in_window():
     return f"2 parts exported ({d[0]:.1f}s + {d[1]:.1f}s), nothing cut"
 
 
+def t_clean_start_and_overlay_flags():
+    """Simple Edit: (1) the silent start of a video is cut, only the start; (2) overlays only on ticked videos."""
+    import time
+    import app as A
+    import studio as S
+    import engine as E
+    import dialogue
+    # the test movie: tone 0-2 s, silence 2-3 s, tone 3-5 s, silence 5-6 s ...
+    new, why = dialogue.trim_start(movie, 2.0, 8.0, 3.0, False, -35.0, os.path.join(tmp, "tw"), print)
+    assert 2.6 < new < 3.0, (new, why)
+    same, why2 = dialogue.trim_start(movie, 0.0, 6.0, 3.0, False, -35.0, os.path.join(tmp, "tw"), print)
+    assert same == 0.0, (same, why2)
+    cap, _ = dialogue.trim_start(movie, 5.2, 11.0, 0.5, False, -35.0, os.path.join(tmp, "tw"), print)
+    assert cap <= 5.2 + 0.5 + 1e-6, cap                     # never more than the chosen seconds
+    w = A.App()
+    w.update()
+
+    def walk(x):
+        yield x
+        for c in x.winfo_children():
+            yield from walk(c)
+    st = [x for x in walk(w) if isinstance(x, S.Studio) and x.mode == "simple"][0]
+    errors = []
+    S.messagebox.showerror = lambda *a, **k: errors.append(a)
+    S.messagebox.showwarning = lambda *a, **k: errors.append(a)
+    st.load_movie(movie)
+    from PIL import Image
+    png = os.path.join(tmp, "ov.png")
+    Image.new("RGBA", (80, 80), (255, 0, 0, 255)).save(png)
+    st.items = [dict(E.OVERLAY_DEFAULT, kind="overlay", path=png, rel_start=0.0, rel_end=0.0)] \
+        if hasattr(E, "OVERLAY_DEFAULT") else [dict(kind="overlay", path=png, rel_start=0.0, rel_end=0.0)]
+    st.parts = [{"on": True, "sil": True, "ov": True, "start": 2.0, "end": 8.0, "label": ""},
+                {"on": True, "sil": True, "ov": False, "start": 8.0, "end": 12.0, "label": ""}]
+    plans = st.build_plans([(0, st.parts[0]), (1, st.parts[1])])
+    assert len(plans[0]["overlays"]) == 1 and plans[1]["overlays"] == [], [len(p["overlays"]) for p in plans]
+    st.trim_on.set(True)
+    st.trim_voice.set(False)
+    st.trim_sec.set("3")
+    st.cfg.update(codec=[c for c in E.CODECS if "CPU" in c][0], resolution="480p", rate_mode=E.RATE_MODES[0], bitrate=2000)
+    st.sync_export = lambda: None
+    st.export()
+    assert not errors, errors
+    t0 = time.time()
+    while st.eng is not None and time.time() - t0 < 240:
+        w.update(); time.sleep(0.05)
+    log = st.exp_log.get("1.0", "end")
+    assert st.eng is None, "export did not finish:\n" + log[-800:]
+    out = os.path.join(E.OUTPUT_DIR, f"{st.file_base()}_simple")
+    files = sorted(f for f in os.listdir(out) if f.endswith(".mp4"))
+    assert len(files) == 2, f"expected 2 parts, got {files}\n" + log[-800:]
+    d = [float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", os.path.join(out, f)],
+                              capture_output=True, text=True).stdout.strip()) for f in files]
+    assert 5.0 < d[0] < 5.6, ("part 1 starts in silence: about 0.9 s must be cut from 6 s", d, log[-600:])
+    assert abs(d[1] - 4.0) < 0.5, ("part 2 starts with talking: untouched", d, log[-600:])
+    assert "Clean start" in log, log[-500:]
+    w.destroy()
+    return f"start trimmed ({d[0]:.1f}s of 6.0s), second part untouched ({d[1]:.1f}s), overlay only on ticked video"
+
+
 def t_many_pieces():
     import engine as E
     cpu = [c for c in E.CODECS if "CPU" in c][0]
@@ -283,6 +342,7 @@ step("all modules import", t_modules)
 step("silence scan of only the start of parts", t_silence_windows)
 step("window and Cutting ON/OFF switches", t_window)
 step("Simple Edit: export button, 2 parts", t_simple_export_in_window)
+step("Simple Edit: clean start + overlay only on ticked videos", t_clean_start_and_overlay_flags)
 step("silence cut, one part at a time (AI Clipping)", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)
 step("400 pieces in one clip (long filter graph)", t_many_pieces)

@@ -119,13 +119,16 @@ class Studio(ctk.CTkFrame):
         self.head_on = tk.BooleanVar(value=False)      # cut only the first N seconds of every part
         self.head_sec = tk.StringVar(value="3")
         self.dl_on = tk.BooleanVar(value=False)        # dialogue clean-up ON / OFF (same switch in several tabs)
+        self.trim_on = tk.BooleanVar(value=False)      # Simple Edit: cut silent / non-talking START of every video
+        self.trim_sec = tk.StringVar(value="3")
+        self.trim_voice = tk.BooleanVar(value=True)
         self.right = ctk.CTkTabview(self, width=410)
         self.right.grid(row=1, column=2, sticky="nsew", padx=(4, 6), pady=(0, 6))
         # Simple Edit is only editing (crop, colour, overlay, text, export): no silence cut and no dialogue clean-up.
         # Those two live in AI Clipping. (Their settings objects are still created, in a hidden frame, so the rest of the
         # program keeps working; they are never used in Simple Edit.)
         cutting = self.mode == "ai"
-        for name in ("Aspect & Crop", "Colour", "Overlay", "Text") + (("Silence",) if cutting else ()) + ("Export",) + (("Dialogue",) if cutting else ()):
+        for name in ("Aspect & Crop", "Colour", "Overlay", "Text") + (("Silence",) if cutting else ()) + (("Clean start",) if not cutting else ()) + ("Export",) + (("Dialogue",) if cutting else ()):
             self.right.add(name)
         self.build_aspect(self.right.tab("Aspect & Crop"))
         self.build_colour(self.right.tab("Colour"))
@@ -133,6 +136,7 @@ class Studio(ctk.CTkFrame):
         self.build_text(self.right.tab("Text"))
         hidden = ctk.CTkFrame(self)
         self.build_silence(self.right.tab("Silence") if cutting else hidden)
+        self.build_trim(self.right.tab("Clean start") if not cutting else hidden)
         self.build_export(self.right.tab("Export"))
         self.build_dialogue(self.right.tab("Dialogue") if cutting else hidden)
 
@@ -287,6 +291,15 @@ class Studio(ctk.CTkFrame):
         ctk.CTkButton(bar, text="+ Add photo / video", command=lambda: self.add_item("overlay")).pack(side="left")
         ctk.CTkButton(bar, text="Remove", width=90, fg_color=DANGER, hover_color=DANGER_H, text_color=TEXT,
                       command=self.remove_selected).pack(side="right")
+        sel = ctk.CTkFrame(tab, fg_color="transparent")
+        sel.pack(fill="x", padx=6, pady=(2, 0))
+        ctk.CTkButton(sel, text="Overlay: all videos", width=140, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
+                      command=lambda: self.set_all_overlays(True)).pack(side="left")
+        ctk.CTkButton(sel, text="Overlay: no video", width=130, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
+                      command=lambda: self.set_all_overlays(False)).pack(side="left", padx=6)
+        self.ov_sum = ctk.CTkLabel(tab, text="Make parts first, then choose which videos get overlays.",
+                                   text_color=GREY, wraplength=380, justify="left", anchor="w")
+        self.ov_sum.pack(fill="x", padx=8, pady=(2, 0))
         self.ov_list = ctk.CTkScrollableFrame(tab, height=110, label_text="Overlays on this part")
         self.ov_list.pack(fill="x", padx=6, pady=4)
         self.ov_editor = ctk.CTkScrollableFrame(tab)
@@ -310,6 +323,78 @@ class Studio(ctk.CTkFrame):
         self.tx_list.pack(fill="x", padx=6, pady=4)
         self.tx_editor = ctk.CTkScrollableFrame(tab)
         self.tx_editor.pack(fill="both", expand=True, padx=6, pady=(2, 6))
+
+    # ---------------- right: clean start (Simple Edit)
+    def build_trim(self, tab):
+        f = self.scroll(tab)
+        ctk.CTkSwitch(f, text="Cut the silent / non-talking START of every video", variable=self.trim_on,
+                      text_color=TEXT).pack(anchor="w", padx=10, pady=(10, 4))
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(fill="x", padx=10, pady=4)
+        ctk.CTkLabel(row, text="Look only at the first", text_color=TEXT).pack(side="left")
+        ctk.CTkEntry(row, width=48, textvariable=self.trim_sec).pack(side="left", padx=6)
+        ctk.CTkLabel(row, text="seconds of every video", text_color=TEXT).pack(side="left")
+        ctk.CTkCheckBox(f, text="Also cut a start with music / noise but nobody talking (uses voice detection)",
+                        variable=self.trim_voice, text_color=TEXT).pack(anchor="w", padx=10, pady=4)
+        ctk.CTkLabel(f, text="If a video begins with a silent (or not talking) stretch, the video starts where the "
+                             "talking starts. Only the beginning is checked and cut - never the middle or the end. "
+                             "At most the seconds above are cut. Applies to every ticked part when you export. "
+                             "Switch it OFF and nothing is cut.",
+                     text_color=GREY, wraplength=340, justify="left").pack(anchor="w", padx=10, pady=4)
+        ctk.CTkButton(f, text="Test on the part shown in the preview", height=36, command=self.trim_test).pack(
+            fill="x", padx=10, pady=(8, 4))
+        self.trim_result = ctk.CTkLabel(f, text="", text_color=GREY, wraplength=340, justify="left", anchor="w")
+        self.trim_result.pack(fill="x", padx=10, pady=4)
+
+    def trim_seconds(self):
+        try:
+            return max(0.5, float(str(self.trim_sec.get()).replace(",", ".")))
+        except ValueError:
+            return 3.0
+
+    def trim_one(self, movie, a, b, log):
+        work = os.path.join(E.OUTPUT_DIR, "_trim_work")
+        try:
+            return dialogue.trim_start(movie, a, b, self.trim_seconds(), bool(self.trim_voice.get()), -35.0, work, log)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def trim_test(self):
+        if not self.movie:
+            messagebox.showwarning("Clean start", "Please choose a movie first.")
+            return
+        part = dict(self.current_part())
+        movie, n = self.movie, self.part_idx + 1
+        self.trim_result.configure(text="Checking the start of the shown part ...")
+
+        def work():
+            try:
+                new, why = self.trim_one(movie, part["start"], part["end"], lambda m: None)
+                self.q.put(("trim", f"Part {n}: " + (f"starts {new - part['start']:.2f} s later - {why}"
+                                                      if new > part["start"] else why)))
+            except Exception as e:
+                self.q.put(("trim", f"Part {n}: check failed ({str(e)[:160]})"))
+        threading.Thread(target=work, daemon=True).start()
+
+    def trim_prepare(self, movie, log, items_snapshot):
+        """Simple Edit: for ONE part at a time, moves its start to where the talking starts (only the first seconds
+        are looked at). Texts and overlays are re-timed from the new start."""
+        if self.mode != "simple" or not self.trim_on.get():
+            return None
+
+        def prep(plan):
+            a, b = plan["start"], plan["end"]
+            new, why = self.trim_one(movie, a, b, log)
+            if new <= a:
+                log(f"Clean start: {plan['file']} - {why}")
+                return plan
+            log(f"Clean start: {plan['file']} - {why}")
+            ovs, txs = auto_short.relative_items(items_snapshot, b - new, plan["number"])
+            off = lambda L: [dict(d, start=d["start"] + new, end=d["end"] + new) for d in L]
+            if not plan.get("ov", True):
+                ovs = []
+            return dict(plan, start=new, pieces=[(new, b - new)], overlays=off(ovs), texts=off(txs))
+        return prep
 
     # ---------------- right: silence
     def build_silence(self, tab):
@@ -610,7 +695,8 @@ class Studio(ctk.CTkFrame):
             count = max(1, min(count, 500))
             piece = (b - a) / count
             spans = [(a + i * piece, piece) for i in range(count)]
-        self.parts = [{"on": True, "sil": True, "start": round(t, 3), "end": round(t + d, 3), "label": ""}
+        self.parts = [{"on": True, "sil": True, "ov": True, "start": round(t, 3), "end": round(t + d, 3),
+                       "label": ""}
                       for t, d in spans]
         self.refresh_parts()
         self.select_part(0)
@@ -620,7 +706,7 @@ class Studio(ctk.CTkFrame):
             return
         last = self.parts[-1]["end"] if self.parts else 0.0
         st = min(last, max(0.0, self.dur - 1))
-        self.parts.append({"on": True, "sil": True, "start": round(st, 3),
+        self.parts.append({"on": True, "sil": True, "ov": True, "start": round(st, 3),
                            "end": round(min(self.dur, st + 30), 3), "label": ""})
         self.refresh_parts()
 
@@ -652,11 +738,15 @@ class Studio(ctk.CTkFrame):
                           text_color=TEXT, command=lambda i=i: self.remove_part(i)).grid(row=0, column=3, padx=(0, 6),
                                                                                          pady=(6, 0))
             ctk.CTkLabel(row, text=f"{tstr(p['start'])}  to  {tstr(p['end'])}   ({p['end'] - p['start']:.1f}s)",
-                         text_color=GREY).grid(row=1, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 6))
+                         text_color=GREY).grid(row=1, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 2))
+            ov = tk.BooleanVar(value=bool(p.get("ov", True)))
+            ov.trace_add("write", lambda *a, p=p, v=ov: self._set_flag(p, "ov", v))
+            ctk.CTkCheckBox(row, text="Overlay on this video", variable=ov, width=150).grid(
+                row=2, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 6))
         n_on = sum(1 for p in self.parts if p["on"])
         self.parts_sum.configure(text=f"{n_on} of {len(self.parts)} parts will be exported" if self.parts
                                  else "No parts yet. Make parts above.")
-        self.update_sil_summary()
+        self.refresh_parts_summary_only()
 
     def _set_flag(self, p, key, var):
         try:
@@ -664,11 +754,26 @@ class Studio(ctk.CTkFrame):
         except Exception:
             return
         self.refresh_parts_summary_only()
+        if key == "ov":
+            self.schedule_render()
+            self.redraw_items()
+
+    def set_all_overlays(self, on):
+        for p in self.parts:
+            p["ov"] = on
+        self.refresh_parts()
+        self.schedule_render()
+        self.redraw_items()
 
     def refresh_parts_summary_only(self):
         n_on = sum(1 for p in self.parts if p["on"])
+        n_ov = sum(1 for p in self.parts if p.get("ov", True))
         self.parts_sum.configure(text=f"{n_on} of {len(self.parts)} parts will be exported" if self.parts
                                  else "No parts yet. Make parts above.")
+        if hasattr(self, "ov_sum"):
+            self.ov_sum.configure(text=f"Overlays are ON for {n_ov} of {len(self.parts)} videos (tick 'Overlay on this "
+                                       f"video' in the Parts list on the left)" if self.parts
+                                  else "Make parts first, then choose which videos get overlays.")
         self.update_sil_summary()
 
     def remove_part(self, i):
@@ -720,6 +825,8 @@ class Studio(ctk.CTkFrame):
     def localized(self, part, number=1):
         ovs, txs = [], []
         for it in self.items:
+            if it["kind"] == "overlay" and not part.get("ov", True):
+                continue                               # overlays are switched OFF for this video
             d = self.localized_item(it, part, number)
             if d["end"] <= d["start"]:
                 continue
@@ -1067,6 +1174,8 @@ class Studio(ctk.CTkFrame):
         part = self.current_part()
         t_abs = part["start"] + self.t_rel
         for idx, it in enumerate(self.items):
+            if it["kind"] == "overlay" and not part.get("ov", True):
+                continue
             d = self.localized_item(it, part, self.part_number(self.part_idx))
             if not self.item_visible(d, t_abs):
                 continue
@@ -1324,7 +1433,8 @@ class Studio(ctk.CTkFrame):
 
         def log(m):
             self.q.put(("elog", m))
-        sil_prep = None if with_dialogue else self.silence_prepare(movie, log)
+        sil_prep = None if with_dialogue else (self.silence_prepare(movie, log)
+                                               or self.trim_prepare(movie, log, items_snapshot))
 
         def work():
             work_dir = os.path.join(out_dir, "_dialogue_work")
@@ -1372,7 +1482,7 @@ class Studio(ctk.CTkFrame):
             mm, ss = divmod(int(p["start"]), 60)
             plans.append(dict(file=f"{base}_part{number:02d}_{mm:02d}m{ss:02d}s.mp4", start=p["start"],
                               end=p["end"], label=p.get("label", ""), pieces=pieces, overlays=ovs, texts=txs,
-                              number=number, sil=sil_flag))
+                              number=number, sil=sil_flag, ov=bool(p.get("ov", True))))
         return plans
 
     def silence_prepare(self, movie, log):
@@ -1507,6 +1617,8 @@ class Studio(ctk.CTkFrame):
                     frame = v
                 elif kind == "scan":
                     self.on_scan(*v)
+                elif kind == "trim":
+                    self.trim_result.configure(text=v)
                 elif kind in ("elog", "eprog", "eclip", "edone", "pdone"):
                     self.on_export_msg(kind, v)
                 elif kind in ("alog", "aprog", "aclip", "adone"):
@@ -1602,6 +1714,7 @@ class Studio(ctk.CTkFrame):
                           whisper=bool(self.dl_whisper.get()), pad=float(self.dl_pad.get()),
                           minsil=float(self.dl_minsil.get()), remove=self.dl_remove.get(), lang=self.dl_lang.get(),
                           minpiece=float(self.dl_minpiece.get()), scan=bool(self.dl_scan.get())),
+            trim=dict(on=bool(self.trim_on.get()), sec=self.trim_seconds(), voice=bool(self.trim_voice.get())),
             right_tab=self.right.get())
         if self.mode == "simple":
             st["range"] = dict(start=self.p_start.get(), end=self.p_end.get(), count=self.p_count.get(),
@@ -1646,6 +1759,7 @@ class Studio(ctk.CTkFrame):
         self._try("texts and parts", self._restore_items, st)
         self._try("silence", self._restore_silence, st)
         self._try("dialogue", self._restore_dialogue, st)
+        self._try("clean start", self._restore_trim, st)
         self._try("position", self._restore_view, st)
         return self.restore_errors
 
@@ -1670,7 +1784,7 @@ class Studio(ctk.CTkFrame):
 
     def _restore_items(self, st):
         self.items = copy.deepcopy(st.get("items") or [])
-        base = {"on": True, "sil": True, "start": 0.0, "end": 0.0, "label": ""}
+        base = {"on": True, "sil": True, "ov": True, "start": 0.0, "end": 0.0, "label": ""}
         self.parts = []
         for p in (st.get("parts") or []):
             q = dict(base, **p)
@@ -1714,6 +1828,12 @@ class Studio(ctk.CTkFrame):
         self.dl_remove.set(str(dl.get("remove", "um, uh")))
         self.dl_lang.set(str(dl.get("lang", "")))
         self.update_cut_info()
+
+    def _restore_trim(self, st):
+        tr = st.get("trim") or {}
+        self.trim_on.set(bool(tr.get("on", False)))
+        self.trim_sec.set(f"{float(tr.get('sec', 3)):g}")
+        self.trim_voice.set(bool(tr.get("voice", True)))
 
     def _restore_view(self, st):
         self.sel = None
