@@ -4,7 +4,7 @@ Left   : movie range, parts (or AI clips) with on/off and per-part silence cut.
 Centre : live preview. Drag overlays and text with the mouse; pick a colour from the picture for chroma key.
 Right  : Aspect & Crop, Colour, Overlay, Text, Silence, Export.
 """
-import os, re, math, copy, queue, shutil, subprocess, threading, traceback
+import os, re, math, copy, uuid, queue, shutil, subprocess, threading, traceback
 import dialogue
 import auto_short
 import colour as CL
@@ -35,6 +35,24 @@ def tstr(t):
     t = max(0.0, float(t))
     m, s = divmod(t, 60)
     return f"{int(m):02d}:{s:04.1f}"
+
+
+def eff_item(it, ov=True, txo=None):
+    """The overlay / text item as ONE video gets it: None = not shown on this video; a text may have its own words
+    on this video (txo = {text uid: {"show": bool, "text": str}} of the part)."""
+    if it.get("kind") == "overlay":
+        return it if ov else None
+    st = (txo or {}).get(it.get("uid"))
+    if not st:
+        return it
+    if not st.get("show", True):
+        return None
+    own = str(st.get("text", ""))
+    return dict(it, text=own) if own.strip() else it
+
+
+def items_for(items, ov=True, txo=None):
+    return [d for d in (eff_item(it, ov, txo) for it in items) if d is not None]
 
 
 class Studio(ctk.CTkFrame):
@@ -119,6 +137,9 @@ class Studio(ctk.CTkFrame):
         self.head_on = tk.BooleanVar(value=False)      # cut only the first N seconds of every part
         self.head_sec = tk.StringVar(value="3")
         self.dl_on = tk.BooleanVar(value=False)        # dialogue clean-up ON / OFF (same switch in several tabs)
+        self.done_names = set()                        # exported parts ("<folder>/<file>"): an export that was stopped continues
+        self.resume_on = tk.BooleanVar(value=True)
+        self.cur_out = ""
         self.trim_on = tk.BooleanVar(value=False)      # Simple Edit: cut silent / non-talking START of every video
         self.trim_sec = tk.StringVar(value="3")
         self.trim_voice = tk.BooleanVar(value=True)
@@ -394,10 +415,9 @@ class Studio(ctk.CTkFrame):
                 log(f"Clean start: {plan['file']} - {why}")
                 return plan
             log(f"Clean start: {plan['file']} - {why}")
-            ovs, txs = auto_short.relative_items(items_snapshot, b - new, plan["number"])
+            ovs, txs = auto_short.relative_items(items_for(items_snapshot, plan.get("ov", True), plan.get("txo")),
+                                                 b - new, plan["number"])
             off = lambda L: [dict(d, start=d["start"] + new, end=d["end"] + new) for d in L]
-            if not plan.get("ov", True):
-                ovs = []
             return dict(plan, start=new, pieces=[(new, b - new)], overlays=off(ovs), texts=off(txs))
         return prep
 
@@ -468,9 +488,14 @@ class Studio(ctk.CTkFrame):
                       text_color=TEXT, command=lambda: self.play_preview(False)).pack(fill="x", padx=10, pady=3)
         ctk.CTkButton(f, text="Play whole edit (all ticked parts)", height=36, fg_color=QUIET, hover_color=QUIET_H,
                       text_color=TEXT, command=lambda: self.play_preview(True)).pack(fill="x", padx=10, pady=3)
+        ctk.CTkCheckBox(f, text="If an export was stopped, continue where it stopped (skip parts already exported)",
+                        variable=self.resume_on, text_color=TEXT, command=self.update_resume_label).pack(
+            anchor="w", padx=10, pady=(12, 0))
+        self.resume_lbl = ctk.CTkLabel(f, text="", text_color=GREY, wraplength=360, justify="left", anchor="w")
+        self.resume_lbl.pack(fill="x", padx=10, pady=(0, 0))
         self.exp_go = ctk.CTkButton(f, text="EXPORT SELECTED PARTS", height=44,
                                     font=ctk.CTkFont(size=14, weight="bold"), command=lambda: self.export())
-        self.exp_go.pack(fill="x", padx=10, pady=(14, 4))
+        self.exp_go.pack(fill="x", padx=10, pady=(6, 4))
         self.exp_stop = ctk.CTkButton(f, text="Stop", height=34, fg_color=DANGER, hover_color=DANGER_H,
                                       text_color=TEXT, state="disabled", command=self.stop_export)
         self.exp_stop.pack(fill="x", padx=10, pady=4)
@@ -775,6 +800,7 @@ class Studio(ctk.CTkFrame):
         n_ov = sum(1 for p in self.parts if p.get("ov", True))
         self.parts_sum.configure(text=f"{n_on} of {len(self.parts)} parts will be exported" if self.parts
                                  else "No parts yet. Make parts above.")
+        self.update_resume_label()
         if hasattr(self, "ov_sum"):
             self.ov_sum.configure(text=f"Overlays are ON for {n_ov} of {len(self.parts)} videos (tick 'Overlay on this "
                                        f"video' in the Parts list on the left)" if self.parts
@@ -801,6 +827,7 @@ class Studio(ctk.CTkFrame):
         self.pos_slider.set(0)
         self.pos_lbl.configure(text="Position: 00:00.0")
         self.refresh_parts()
+        self.refresh_pv()
         self.schedule_render()
 
     def on_pos_slider(self, v):
@@ -827,11 +854,18 @@ class Studio(ctk.CTkFrame):
             d["text"] = str(it.get("text", "")).replace("{n}", str(number))
         return d
 
+    @staticmethod
+    def uid_of(it):
+        if not it.get("uid"):
+            it["uid"] = uuid.uuid4().hex[:8]
+        return it
+
     def localized(self, part, number=1):
         ovs, txs = [], []
         for it in self.items:
-            if it["kind"] == "overlay" and not part.get("ov", True):
-                continue                               # overlays are switched OFF for this video
+            it = eff_item(self.uid_of(it), part.get("ov", True), part.get("txo"))
+            if it is None:
+                continue                               # switched OFF for this video
             d = self.localized_item(it, part, number)
             if d["end"] <= d["start"]:
                 continue
@@ -859,6 +893,7 @@ class Studio(ctk.CTkFrame):
                       size=5.0, color="#FFFFFF", opacity=100, outline=2, outline_color="#000000",
                       shadow=True, box=False, box_color="#000000", box_opacity=60, font=E.TEXT_DEFAULT["font"],
                       rel_start=0.0, rel_end=0.0)
+        it["uid"] = uuid.uuid4().hex[:8]
         self.items.append(it)
         self.select(len(self.items) - 1)
 
@@ -959,7 +994,87 @@ class Studio(ctk.CTkFrame):
         ctk.CTkButton(box, text="Delete this overlay", fg_color=DANGER, hover_color=DANGER_H, text_color=TEXT,
                       command=self.remove_selected).pack(anchor="w", padx=8, pady=(10, 6))
 
+    # ---- per video: show / hide this text and give it other words on one video
+    def build_pv(self, box, it):
+        self.uid_of(it)
+        self.pv_box = ctk.CTkFrame(box, corner_radius=8)
+        self.pv_box.pack(fill="x", padx=8, pady=(6, 4))
+        self.pv_item = it
+        self.refresh_pv()
+
+    def refresh_pv(self):
+        """(Re)builds the 'this video' box for the text that is selected and the part that is shown."""
+        box = getattr(self, "pv_box", None)
+        it = getattr(self, "pv_item", None)
+        try:
+            if box is None or it is None or not box.winfo_exists():
+                return
+        except Exception:
+            return
+        for w in box.winfo_children():
+            w.destroy()
+        if not self.parts:
+            ctk.CTkLabel(box, text="Make parts first - then you can choose which videos get this text and give a "
+                                   "video its own words.", text_color=GREY, wraplength=330, justify="left").pack(
+                anchor="w", padx=8, pady=8)
+            return
+        part, uid = self.current_part(), it["uid"]
+        n = self.part_idx + 1
+        ctk.CTkLabel(box, text=f"THIS VIDEO  (part {n} of {len(self.parts)})", font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=NEON).pack(anchor="w", padx=8, pady=(6, 2))
+        st = (part.setdefault("txo", {})).setdefault(uid, {"show": True, "text": ""})
+        show = tk.BooleanVar(value=bool(st.get("show", True)))
+
+        def toggled(*_):
+            st["show"] = bool(show.get())
+            self._pv_changed()
+        show.trace_add("write", toggled)
+        ctk.CTkCheckBox(box, text="Show this text on this video", variable=show).pack(anchor="w", padx=8, pady=2)
+        ctk.CTkLabel(box, text="Other words on this video only (empty = the main text below):", text_color=TEXT,
+                     anchor="w").pack(fill="x", padx=8, pady=(4, 0))
+        tb = ctk.CTkTextbox(box, height=54)
+        tb.pack(fill="x", padx=8, pady=2)
+        tb.insert("1.0", str(st.get("text", "")))
+
+        def typed(_=None):
+            st["text"] = tb.get("1.0", "end").strip("\n")
+            self._pv_changed()
+        tb.bind("<KeyRelease>", typed)
+        nav = ctk.CTkFrame(box, fg_color="transparent")
+        nav.pack(fill="x", padx=8, pady=2)
+        ctk.CTkButton(nav, text="< Previous video", width=110, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
+                      command=lambda: self.select_part(max(0, self.part_idx - 1))).pack(side="left")
+        ctk.CTkButton(nav, text="Next video >", width=110, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
+                      command=lambda: self.select_part(min(len(self.parts) - 1, self.part_idx + 1))).pack(
+            side="left", padx=6)
+        allr = ctk.CTkFrame(box, fg_color="transparent")
+        allr.pack(fill="x", padx=8, pady=2)
+        for text, fn in (("Show on all videos", lambda: self._pv_all(uid, show=True)),
+                         ("Hide on all videos", lambda: self._pv_all(uid, show=False)),
+                         ("Remove other words", lambda: self._pv_all(uid, clear=True))):
+            ctk.CTkButton(allr, text=text, width=100, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
+                          command=fn).pack(side="left", padx=(0, 4))
+        shown = sum(1 for p in self.parts if (p.get("txo") or {}).get(uid, {}).get("show", True))
+        own = sum(1 for p in self.parts if str((p.get("txo") or {}).get(uid, {}).get("text", "")).strip())
+        ctk.CTkLabel(box, text=f"Shown on {shown} of {len(self.parts)} videos, {own} with their own words.",
+                     text_color=GREY, anchor="w").pack(fill="x", padx=8, pady=(2, 6))
+
+    def _pv_changed(self):
+        self.schedule_render()
+        self.draw_boxes()
+
+    def _pv_all(self, uid, show=None, clear=False):
+        for p in self.parts:
+            st = p.setdefault("txo", {}).setdefault(uid, {"show": True, "text": ""})
+            if show is not None:
+                st["show"] = show
+            if clear:
+                st["text"] = ""
+        self.refresh_pv()
+        self._pv_changed()
+
     def _build_text_editor(self, box, it):
+        self.build_pv(box, it)
         ctk.CTkLabel(box, text="TEXT", font=ctk.CTkFont(size=12, weight="bold"), text_color=NEON).pack(
             anchor="w", padx=8, pady=(6, 2))
         tb = ctk.CTkTextbox(box, height=70)
@@ -1178,9 +1293,11 @@ class Studio(ctk.CTkFrame):
         ox, oy, dw, dh, W, H = self.view
         part = self.current_part()
         t_abs = part["start"] + self.t_rel
-        for idx, it in enumerate(self.items):
-            if it["kind"] == "overlay" and not part.get("ov", True):
+        for idx, it0 in enumerate(self.items):
+            it = eff_item(self.uid_of(it0), part.get("ov", True), part.get("txo"))
+            if it is None:
                 continue
+            it = it0 if it["kind"] == "overlay" else it
             d = self.localized_item(it, part, self.part_number(self.part_idx))
             if not self.item_visible(d, t_abs):
                 continue
@@ -1426,9 +1543,28 @@ class Studio(ctk.CTkFrame):
             self.app.s[k] = s[k]
         E.save_settings(self.app.sync_vars())
         plans = self.build_plans([(i, p) for i, p in enumerate(self.parts) if p["on"]])
-        out_dir = os.path.join(E.OUTPUT_DIR, f"{self.file_base()}_{'simple' if self.mode == 'simple' else 'ai'}"
-                                             + ("_dialogue" if with_dialogue else ""))
+        out_dir = self.out_dir_for(with_dialogue)
         self.exp_log.delete("1.0", "end")
+        # an export that was stopped continues where it stopped: parts that are already finished are skipped
+        done_idx, _ = self.pending_parts(out_dir)
+        done_files = {pl["file"] for pl in plans
+                      if self.done_key(out_dir, pl["file"]) in self.done_names
+                      and os.path.isfile(os.path.join(out_dir, pl["file"]))}
+        if done_files and self.resume_on.get():
+            if len(done_files) == len(plans):
+                if not messagebox.askyesno("Export", "All ticked parts are already exported.\n\nExport all of them "
+                                                     "again from the beginning?"):
+                    return
+                for f in done_files:
+                    self.done_names.discard(self.done_key(out_dir, f))
+            else:
+                plans = [pl for pl in plans if pl["file"] not in done_files]
+                self.exp_log.insert("end", f"Continuing where the last export stopped: {len(done_files)} part(s) are "
+                                           f"already exported and skipped, {len(plans)} left.\n")
+        else:
+            for pl in plans:                                       # starting over: nothing counts as done any more
+                self.done_names.discard(self.done_key(out_dir, pl["file"]))
+        self.cur_out = out_dir
         self.exp_go.configure(state="disabled")
         self.exp_stop.configure(state="normal")
         self.eng = E.StudioEngine(s, lambda m: self.q.put(("elog", m)),
@@ -1458,7 +1594,8 @@ class Studio(ctk.CTkFrame):
                         if not pieces:
                             return None
                         total = sum(d for _, d in pieces)
-                        ovs, txs = auto_short.relative_items(items_snapshot, total, plan["number"])
+                        ovs, txs = auto_short.relative_items(
+                            items_for(items_snapshot, plan.get("ov", True), plan.get("txo")), total, plan["number"])
                         log(f"  {len(pieces)} dialogue pieces, {total:.1f}s of talking "
                             f"(from {plan['end'] - plan['start']:.1f}s) - shortest piece "
                             f"{min(d for _, d in pieces):.1f}s, average {total / len(pieces):.1f}s")
@@ -1470,13 +1607,46 @@ class Studio(ctk.CTkFrame):
             self.q.put(("edone", out_dir))
         threading.Thread(target=work, daemon=True).start()
 
+    def out_dir_for(self, with_dialogue=False):
+        return os.path.join(E.OUTPUT_DIR, f"{self.file_base()}_{'simple' if self.mode == 'simple' else 'ai'}"
+                                          + ("_dialogue" if with_dialogue else ""))
+
+    def done_key(self, out_dir, file):
+        return f"{os.path.basename(out_dir)}/{file}"
+
+    def pending_parts(self, out_dir):
+        """(already exported, still to do) among the ticked parts: (list of part numbers, list of part numbers)."""
+        done, todo = [], []
+        for i, p in enumerate(self.parts):
+            if not p["on"]:
+                continue
+            f = self.plan_file(i, p)
+            ok = self.done_key(out_dir, f) in self.done_names and os.path.isfile(os.path.join(out_dir, f))
+            (done if ok else todo).append(i + 1)
+        return done, todo
+
+    def update_resume_label(self):
+        try:
+            if not self.movie or not self.parts:
+                self.resume_lbl.configure(text="")
+                return
+            done, todo = self.pending_parts(self.out_dir_for(bool(self.dl_on.get()) and self.mode == "ai"))
+            if done and todo and self.resume_on.get():
+                self.resume_lbl.configure(text=f"{len(done)} part(s) already exported. Export continues with part "
+                                               f"{todo[0]} ({len(todo)} left).")
+            elif done and not todo:
+                self.resume_lbl.configure(text="All ticked parts are already exported.")
+            else:
+                self.resume_lbl.configure(text="")
+        except Exception:
+            pass
+
     def file_base(self):
         base = os.path.splitext(os.path.basename(self.movie))[0]
         return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in base)[:40]
 
     def build_plans(self, chosen):
         """chosen: [(index, part)]. Returns one output plan per part (silence cut and numbering applied)."""
-        base = self.file_base()
         pad = float(self.sil_pad.get())
         plans = []
         for idx, p in chosen:
@@ -1484,11 +1654,15 @@ class Studio(ctk.CTkFrame):
             ovs, txs = self.localized(p, number)
             pieces = [(p["start"], p["end"] - p["start"])]       # silence_prepare cuts the silence of this part only, when its turn comes
             sil_flag = bool(self.mode == "ai" and self.sil_on.get() and p["sil"])
-            mm, ss = divmod(int(p["start"]), 60)
-            plans.append(dict(file=f"{base}_part{number:02d}_{mm:02d}m{ss:02d}s.mp4", start=p["start"],
+            plans.append(dict(file=self.plan_file(idx, p), start=p["start"],
                               end=p["end"], label=p.get("label", ""), pieces=pieces, overlays=ovs, texts=txs,
-                              number=number, sil=sil_flag, ov=bool(p.get("ov", True))))
+                              number=number, sil=sil_flag, ov=bool(p.get("ov", True)),
+                              txo=copy.deepcopy(p.get("txo") or {})))
         return plans
+
+    def plan_file(self, idx, p):
+        mm, ss = divmod(int(p["start"]), 60)
+        return f"{self.file_base()}_part{self.part_number(idx):02d}_{mm:02d}m{ss:02d}s.mp4"
 
     def silence_prepare(self, movie, log):
         """Returns a function that, for ONE part at a time, scans only that part's sound for silence and builds its
@@ -1655,6 +1829,9 @@ class Studio(ctk.CTkFrame):
         elif kind == "eclip":
             self.exp_log.insert("end", f"Saved: {v['path']}\n")
             self.exp_log.see("end")
+            if self.cur_out:
+                self.done_names.add(self.done_key(self.cur_out, os.path.basename(v["path"])))
+                self.update_resume_label()
         elif kind == "pdone":
             self.eng = None
             self.exp_go.configure(state="normal")
@@ -1665,9 +1842,14 @@ class Studio(ctk.CTkFrame):
             else:
                 self.exp_status.configure(text="Preview failed - see the log.")
         elif kind == "edone":
+            stopped = bool(getattr(self.eng, "stop_flag", False))
             self.eng = None
             self.exp_go.configure(state="normal")
             self.exp_stop.configure(state="disabled")
+            self.update_resume_label()
+            if stopped:
+                self.exp_status.configure(text="Stopped. The next export continues from where it stopped.")
+                return
             self.exp_status.configure(text="Finished. Output folder opened.")
             try:
                 open_path(v)
@@ -1720,6 +1902,7 @@ class Studio(ctk.CTkFrame):
                           minsil=float(self.dl_minsil.get()), remove=self.dl_remove.get(), lang=self.dl_lang.get(),
                           minpiece=float(self.dl_minpiece.get()), scan=bool(self.dl_scan.get())),
             trim=dict(on=bool(self.trim_on.get()), sec=self.trim_seconds(), voice=bool(self.trim_voice.get())),
+            exported=sorted(self.done_names), resume=bool(self.resume_on.get()),
             right_tab=self.right.get())
         if self.mode == "simple":
             st["range"] = dict(start=self.p_start.get(), end=self.p_end.get(), count=self.p_count.get(),
@@ -1733,6 +1916,7 @@ class Studio(ctk.CTkFrame):
         self.info_lbl.configure(text="No movie loaded")
         self.items, self.sel = [], None
         self.parts, self.part_idx, self.t_rel = [], 0, 0.0
+        self.done_names = set()
         self.sil_list, self.sil_key = [], None
         self.last_img = None
         self.sil_summary.configure(text="Not scanned yet")
@@ -1835,6 +2019,8 @@ class Studio(ctk.CTkFrame):
         self.update_cut_info()
 
     def _restore_trim(self, st):
+        self.done_names = set(st.get("exported") or [])
+        self.resume_on.set(bool(st.get("resume", True)))
         tr = st.get("trim") or {}
         self.trim_on.set(bool(tr.get("on", False)))
         self.trim_sec.set(f"{float(tr.get('sec', 3)):g}")

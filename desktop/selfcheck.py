@@ -255,6 +255,74 @@ def t_clean_start_and_overlay_flags():
     return f"start trimmed ({d[0]:.1f}s of 6.0s), second part untouched ({d[1]:.1f}s), overlay only on ticked video"
 
 
+def t_resume_and_text_per_video():
+    """Simple Edit: (1) a stopped export continues where it stopped; (2) a text can be hidden on some videos and have its
+    own words on others."""
+    import time
+    import app as A
+    import studio as S
+    import engine as E
+    w = A.App()
+    w.update()
+
+    def walk(x):
+        yield x
+        for c in x.winfo_children():
+            yield from walk(c)
+    st = [x for x in walk(w) if isinstance(x, S.Studio) and x.mode == "simple"][0]
+    errors, asked = [], []
+    S.messagebox.showerror = lambda *a, **k: errors.append(a)
+    S.messagebox.showwarning = lambda *a, **k: errors.append(a)
+    S.messagebox.askyesno = lambda *a, **k: asked.append(a) or False
+    st.load_movie(movie)
+    txt = dict(E.TEXT_DEFAULT, kind="text", text="Main {n}", pos="Bottom-Center", x=10, y=80, size=5.0, color="#FFFFFF",
+               opacity=100, outline=2, outline_color="#000000", shadow=True, box=False, box_color="#000000",
+               box_opacity=60, font=E.TEXT_DEFAULT["font"], rel_start=0.0, rel_end=0.0, uid="t1")
+    st.items = [txt]
+    st.parts = [{"on": True, "sil": True, "ov": True, "start": float(i), "end": float(i) + 6.0, "label": ""} for i in range(6)]
+    st.parts[0]["txo"] = {"t1": {"show": True, "text": "Alpha {n}"}}
+    st.parts[1]["txo"] = {"t1": {"show": False, "text": ""}}
+    plans = st.build_plans([(i, p) for i, p in enumerate(st.parts)])
+    assert plans[0]["texts"][0]["text"] == "Alpha 1", plans[0]["texts"]
+    assert plans[1]["texts"] == [], plans[1]["texts"]
+    assert plans[2]["texts"][0]["text"] == "Main 3", plans[2]["texts"]
+    st.select(0)
+    st.refresh_pv()                                          # the 'this video' box builds without errors
+    st.cfg.update(codec=[c for c in E.CODECS if "CPU" in c][0], resolution="480p", rate_mode=E.RATE_MODES[0], bitrate=2000)
+    st.sync_export = lambda: None
+    out = st.out_dir_for(False)
+    shutil.rmtree(out, ignore_errors=True)
+    st.done_names = set()
+    st.export()
+    assert not errors, errors
+    t0 = time.time()
+    while st.eng is not None and not st.done_names and time.time() - t0 < 240:
+        w.update(); time.sleep(0.02)
+    st.stop_export()                                         # stop after the first part is finished
+    while st.eng is not None and time.time() - t0 < 240:
+        w.update(); time.sleep(0.05)
+    assert st.eng is None, "export did not stop"
+    n_done = len(st.done_names)
+    assert 1 <= n_done, "no part counted as exported"
+    first = sorted(st.done_names)[0].split("/")[1]
+    m1 = os.path.getmtime(os.path.join(out, first))
+    stopped_status = st.exp_status.cget("text")
+    st.export()                                              # second click: continues
+    t0 = time.time()
+    while st.eng is not None and time.time() - t0 < 300:
+        w.update(); time.sleep(0.05)
+    log = st.exp_log.get("1.0", "end")
+    assert st.eng is None, "second export did not finish:\n" + log[-600:]
+    files = sorted(f for f in os.listdir(out) if f.endswith(".mp4"))
+    assert len(files) == 6 and len(st.done_names) == 6, (files, sorted(st.done_names), log[-600:])
+    if n_done < 6:
+        assert "Continuing where the last export stopped" in log, log[-600:]
+        assert os.path.getmtime(os.path.join(out, first)) == m1, "an exported part was exported again"
+    assert not asked, "asked to export everything again although the last part was not finished"
+    w.destroy()
+    return f"stopped after {n_done} part(s) ('{stopped_status[:30]}'), second export did the rest (6 files); text hidden / own words per video OK"
+
+
 def t_many_pieces():
     import engine as E
     cpu = [c for c in E.CODECS if "CPU" in c][0]
@@ -344,6 +412,7 @@ step("silence scan of only the start of parts", t_silence_windows)
 step("window and Cutting ON/OFF switches", t_window)
 step("Simple Edit: export button, 2 parts", t_simple_export_in_window)
 step("Simple Edit: clean start + overlay only on ticked videos", t_clean_start_and_overlay_flags)
+step("Simple Edit: stop + continue, text per video", t_resume_and_text_per_video)
 step("silence cut, one part at a time (AI Clipping)", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)
 step("400 pieces in one clip (long filter graph)", t_many_pieces)
