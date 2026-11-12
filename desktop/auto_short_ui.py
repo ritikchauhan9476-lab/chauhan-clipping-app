@@ -125,9 +125,20 @@ class AutoShortFrame(ctk.CTkFrame):
         self.minsil = NumField(f, "Minimum silence (ms)", 50, 1000, 10, dialogue.MIN_SIL_MS, "{:.0f}", None,
                                label_width=150)
         self.minsil.pack(fill="x", padx=2, pady=2)
-        self.minpiece = NumField(f, "Shortest clip (s)", 0, 5, 0.1, dialogue.MIN_PIECE, "{:.1f}", None,
+        self.tail = NumField(f, "End-of-sentence padding (ms)", 0, 1000, 10, 350, "{:.0f}", None, label_width=150)
+        self.tail.pack(fill="x", padx=2, pady=2)
+        self.mincut = NumField(f, "Shortest pause that is cut (ms)", 0, 2000, 50, 500, "{:.0f}", None, label_width=150)
+        self.mincut.pack(fill="x", padx=2, pady=2)
+        self.minpiece = NumField(f, "Shortest clip (s)", 0, 5, 0.1, 1.5, "{:.1f}", None,
                                  label_width=150)
         self.minpiece.pack(fill="x", padx=2, pady=2)
+        self.vthr = NumField(f, "Talking sensitivity", 0.2, 0.8, 0.05, 0.45, "{:.2f}",
+                             None, label_width=150)
+        self.vthr.pack(fill="x", padx=2, pady=2)
+        note("Fewer flash cuts: pauses shorter than 'Shortest pause that is cut' stay in (a tiny cut only makes the "
+             "picture jump), and no clip is shorter than 'Shortest clip'. End-of-sentence padding keeps the last "
+             "syllables of every sentence. Lower talking sensitivity keeps soft / quiet talking. A short ends at the biggest pause, so it does not stop in the middle of "
+             "talking.")
         self.denoise = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(f, text="Noise reduction on the sound", variable=self.denoise,
                         text_color=TEXT).pack(anchor="w", padx=8, pady=4)
@@ -173,6 +184,7 @@ class AutoShortFrame(ctk.CTkFrame):
                     keep_last=bool(self.keep_last.get()), pad=float(self.pad.get()),
                     minsil=float(self.minsil.get()), denoise=bool(self.denoise.get()),
                     min_piece=float(self.minpiece.get()), scan_picture=bool(self.scan_pic.get()),
+                    tail=float(self.tail.get()), mincut=float(self.mincut.get()), vthr=float(self.vthr.get()),
                     boost=self.boost_opts(True))
 
     def boost_opts(self, always=False):
@@ -196,7 +208,10 @@ class AutoShortFrame(ctk.CTkFrame):
         self.pad.set(float(st.get("pad", dialogue.PAD_MS)))
         self.minsil.set(float(st.get("minsil", dialogue.MIN_SIL_MS)))
         self.denoise.set(bool(st.get("denoise", True)))
-        self.minpiece.set(float(st.get("min_piece", dialogue.MIN_PIECE)))
+        self.minpiece.set(float(st.get("min_piece", 1.5)))
+        self.tail.set(float(st.get("tail", 350)))
+        self.mincut.set(float(st.get("mincut", 500)))
+        self.vthr.set(float(st.get("vthr", 0.45)))
         self.scan_pic.set(bool(st.get("scan_picture", True)))
         bo = st.get("boost") or {}
         for k, v in self.bo.items():
@@ -327,7 +342,9 @@ class AutoShortFrame(ctk.CTkFrame):
             opts = dict(sm.dialogue_opts())
             opts.update(pad_ms=int(self.pad.get()), min_sil_ms=int(self.minsil.get()),
                         denoise=bool(self.denoise.get()), vad=True, min_piece=float(self.minpiece.get()),
-                        scan_picture=bool(self.scan_pic.get()), boost=self.boost_opts())
+                        scan_picture=bool(self.scan_pic.get()), boost=self.boost_opts(),
+                        tail_ms=int(self.tail.get()), min_cut_ms=int(self.mincut.get()),
+                        vad_threshold=float(self.vthr.get()))
         except ValueError as e:
             messagebox.showerror("Auto Short", str(e) if str(e) and "could not convert" not in str(e)
                                  else "Please enter the Start / End values as numbers.")

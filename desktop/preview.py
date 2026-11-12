@@ -331,7 +331,7 @@ def overlay_box(ov, W, H):
 def text_box(tx, W, H):
     """Top-left and ink size (px) of a text item, used for mouse handles."""
     tx = {**E.TEXT_DEFAULT, **tx}
-    text = str(tx["text"]).strip("\n") or " "
+    text = E.strip_colors(str(tx["text"])).strip("\n") or " "
     fs = max(8, int(H * float(tx["size"]) / 100))
     path = E.resolve_font(tx["font"])
     try:

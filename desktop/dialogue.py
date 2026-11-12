@@ -23,6 +23,7 @@ SCENE_THR = 0.25      # picture jump score (0-1) that counts as a cut between tw
 FLASH_SHOT = 0.30     # a shot shorter than this is a flash cut
 MAX_CUT_RATE = 1.0    # more picture cuts per second than this = fast-cut montage
 SNAP = 0.5            # a dialogue cut this close (s) to a shot change is moved onto the shot change
+MONTAGE_DROP = 2.5    # a fast-cut montage piece is skipped only when it is shorter than this (longer = real talking)
 
 
 def _run(cmd):
@@ -55,17 +56,19 @@ def frame_db(x, sr, hop=HOP):
 
 
 # ------------------------------------------------------------------ speech detection
-def finish_regions(regs, total, pad_ms, min_sil_ms):
+def finish_regions(regs, total, pad_ms, min_sil_ms, tail_ms=None):
     """Raw speech regions -> final pieces: bridge short silences, add padding, merge pieces that would
-    be separated by a pointlessly small cut."""
+    be separated by a pointlessly small cut. tail_ms: padding AFTER speech (the end of a sentence fades out
+    slowly, so it needs more than the start); default = pad_ms."""
     gap, pad = min_sil_ms / 1000.0, pad_ms / 1000.0
+    tail = pad if tail_ms is None else max(0.0, tail_ms / 1000.0)
     merged = []
     for s, e in regs:
         if merged and s - merged[-1][1] < gap:
             merged[-1][1] = max(merged[-1][1], e)
         else:
             merged.append([s, e])
-    padded = [[max(0.0, s - pad), min(total, e + pad)] for s, e in merged]
+    padded = [[max(0.0, s - pad), min(total, e + tail)] for s, e in merged]
     out = []
     for s, e in padded:
         if out and s - out[-1][1] < MERGE_GAP:
@@ -194,12 +197,13 @@ def _silero():
     return _models["silero"]
 
 
-def detect_speech(x, pad_ms, min_sil_ms, log):
-    """x: 16 kHz mono float32. Returns ([(start, end), ...] in seconds, detector name)."""
+def detect_speech(x, pad_ms, min_sil_ms, log, tail_ms=None, threshold=0.5):
+    """x: 16 kHz mono float32. Returns ([(start, end), ...] in seconds, detector name).
+    threshold: Silero speech probability (lower = quiet / soft talking is kept too)."""
     total = len(x) / 16000.0
     try:
-        regs = probs_to_regions(_silero().probs(x), SileroOnnx.WIN / 16000.0)
-        return finish_regions(regs, total, pad_ms, min_sil_ms), "Silero AI"
+        regs = probs_to_regions(_silero().probs(x), SileroOnnx.WIN / 16000.0, threshold)
+        return finish_regions(regs, total, pad_ms, min_sil_ms, tail_ms), "Silero AI"
     except ImportError as e:
         if not _models.get("warned_silero"):
             _models["warned_silero"] = True
@@ -209,7 +213,7 @@ def detect_speech(x, pad_ms, min_sil_ms, log):
         if not _models.get("warned_silero2"):
             _models["warned_silero2"] = True
             log(f"Silero AI failed ({str(e)[:120]}) - using the built-in detector instead.")
-    return finish_regions(voice_band_regions(x, 16000), total, pad_ms, min_sil_ms), "built-in detector"
+    return finish_regions(voice_band_regions(x, 16000), total, pad_ms, min_sil_ms, tail_ms), "built-in detector"
 
 
 # ------------------------------------------------------------------ optional text editing (faster-whisper)
@@ -285,6 +289,27 @@ def smooth_pieces(regs, total, min_piece=MIN_PIECE):
     return [(s, e) for s, e in out]
 
 
+def tidy(regs, lo, hi, min_piece, min_gap):
+    """Final clean-up of [(s, e), ...] (any time base): pauses shorter than min_gap are NOT cut (a tiny cut only
+    makes the picture jump - a 'flash cut'), and no piece is shorter than min_piece."""
+    out = []
+    for s, e in sorted(regs):
+        if out and s - out[-1][1] < min_gap:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    res = []
+    for s, e in out:
+        if e - s < min_piece:
+            extra = (min_piece - (e - s)) / 2.0
+            s, e = max(lo, s - extra), min(hi, e + extra)
+        if res and s <= res[-1][1] + MERGE_GAP:
+            res[-1][1] = max(res[-1][1], e)
+        else:
+            res.append([s, e])
+    return [(s, e) for s, e in res]
+
+
 def _bars(movie):
     """Black bars of the movie (found once per movie): without removing them a letterboxed movie looks 'calm'."""
     key = "crop:" + movie
@@ -324,8 +349,8 @@ def picture_fix(regs, cuts, pad, lo, hi):
     Returns (pieces, dropped, snapped)."""
     kept, dropped, snapped = [], 0, 0
     for s, e in regs:
-        if is_montage(s, e, cuts):
-            dropped += 1
+        if e - s < MONTAGE_DROP and is_montage(s, e, cuts):
+            dropped += 1                  # a short burst of flash cuts; longer talking over fast cuts is kept
             continue
         s0, e0 = s, e
         near = [c for c in cuts if s - SNAP <= c <= s + pad]
@@ -378,8 +403,10 @@ def find_speech(movie, start, end, opts, work_dir, log):
     total = len(x) / sr
     pad = int(opts.get("pad_ms", PAD_MS))
     minsil = int(opts.get("min_sil_ms", MIN_SIL_MS))
+    tail = opts.get("tail_ms")
+    tail = None if tail is None else int(tail)
     if opts.get("vad", True):
-        regs, name = detect_speech(x, pad, minsil, log)
+        regs, name = detect_speech(x, pad, minsil, log, tail, float(opts.get("vad_threshold", 0.5)))
     else:
         regs, name = [(0.0, total)], "off (whole range kept)"
     remove = [w for w in re.split(r"[,;]", opts.get("remove_words", "")) if w.strip()]
@@ -389,11 +416,17 @@ def find_speech(movie, start, end, opts, work_dir, log):
             cuts = removal_spans(words, remove)
             regs = [(s, e) for s, e in subtract(regs, cuts) if e - s >= MIN_KEEP]
             log(f"  text editing: {len(words)} words, {len(cuts)} removed")
-    regs = smooth_pieces(regs, total, float(opts.get("min_piece", MIN_PIECE)))
+    min_piece = float(opts.get("min_piece", MIN_PIECE))
+    min_gap = float(opts.get("min_cut_ms", 0)) / 1000.0
+    regs = smooth_pieces(regs, total, min_piece)
+    if min_gap > 0:
+        regs = tidy(regs, 0.0, total, min_piece, min_gap)
     abs_regs = [(start + s, start + e) for s, e in regs]
     if opts.get("scan_picture") and abs_regs:
         cuts = scene_cuts(movie, start, end)
         abs_regs, dropped, snapped = picture_fix(abs_regs, cuts, pad / 1000.0, start, end)
+        if min_gap > 0:                       # snapping can leave slivers / tiny gaps: clean them up again
+            abs_regs = tidy(abs_regs, start, end, min_piece, min_gap)
         log(f"  picture scan: {len(cuts)} shot changes, {dropped} fast-cut montage piece(s) skipped, "
             f"{snapped} cut(s) moved onto a shot change")
     return dict(regions=abs_regs, contour=(start, HOP, frame_db(x, sr)), detector=name)
@@ -440,6 +473,35 @@ def trim_start(movie, a, b, seconds, voice, noise_db, work_dir, log):
 
 
 # ------------------------------------------------------------------ helpers for building clips
+def trim_end(movie, a, b, seconds, voice, noise_db, work_dir, log):
+    """Simple Edit 'clean end': the mirror of trim_start. Looks ONLY at the last `seconds` seconds of the part
+    [a, b]; a silent (or not talking) ending is cut so the video ends right after the last words (with a short
+    natural pause). Never more than `seconds`. Returns (new_end, info_text); new_end == b when nothing is cut."""
+    seconds = max(0.5, float(seconds))
+    win_start = max(a, b - seconds - 1.5)
+    if b - win_start < 1.0:
+        return b, "part too short, left as it is"
+    trail, how = 0.0, ""
+    if voice:
+        opts = dict(pad_ms=100, tail_ms=350, min_sil_ms=300, min_piece=0.3, vad=True, whisper=False, scan_picture=False)
+        info = find_speech(movie, win_start, b, opts, work_dir, log)
+        if str(info["detector"]).startswith("off"):
+            voice = False
+        else:
+            regs = [r for r in info["regions"] if r[1] - r[0] >= 0.15]
+            trail = (b - regs[-1][1]) if regs else seconds
+            how = "last words"
+    if not voice:
+        sil = E.detect_silence(movie, noise_db, 0.3, None, [(win_start, b)])
+        last = next((x for x in reversed(sil) if x[1] >= b - 0.15), None)
+        trail = max(0.0, b - last[0] - 0.3) if last else 0.0      # keep 0.3 s after the last sound
+        how = "start of the final silence"
+    trail = min(trail, seconds)
+    if trail < 0.25 or (b - trail - a) < 1.0:
+        return b, "ends with talking already"
+    return b - trail, f"{trail:.2f}s cut at the end ({how})"
+
+
 def quietest_point(contour, lo, hi):
     """Time in [lo, hi] (movie seconds) where the sound is quietest (smoothed over ~90 ms)."""
     t0, hop, db = contour

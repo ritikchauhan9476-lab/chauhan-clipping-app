@@ -143,13 +143,15 @@ class Studio(ctk.CTkFrame):
         self.trim_on = tk.BooleanVar(value=False)      # Simple Edit: cut silent / non-talking START of every video
         self.trim_sec = tk.StringVar(value="3")
         self.trim_voice = tk.BooleanVar(value=True)
+        self.tend_on = tk.BooleanVar(value=False)      # Simple Edit: cut the silent / non-talking END of every video
+        self.tend_sec = tk.StringVar(value="3")
         self.right = ctk.CTkTabview(self, width=410)
         self.right.grid(row=1, column=2, sticky="nsew", padx=(4, 6), pady=(0, 6))
         # Simple Edit is only editing (crop, colour, overlay, text, export): no silence cut and no dialogue clean-up.
         # Those two live in AI Clipping. (Their settings objects are still created, in a hidden frame, so the rest of the
         # program keeps working; they are never used in Simple Edit.)
         cutting = self.mode == "ai"
-        for name in ("Aspect & Crop", "Colour", "Overlay", "Text") + (("Silence",) if cutting else ()) + (("Clean start",) if not cutting else ()) + ("Export",) + (("Dialogue",) if cutting else ()):
+        for name in ("Aspect & Crop", "Colour", "Overlay", "Text") + (("Silence",) if cutting else ()) + (("Clean start / end",) if not cutting else ()) + ("Export",) + (("Dialogue",) if cutting else ()):
             self.right.add(name)
         self.build_aspect(self.right.tab("Aspect & Crop"))
         self.build_colour(self.right.tab("Colour"))
@@ -157,7 +159,7 @@ class Studio(ctk.CTkFrame):
         self.build_text(self.right.tab("Text"))
         hidden = ctk.CTkFrame(self)
         self.build_silence(self.right.tab("Silence") if cutting else hidden)
-        self.build_trim(self.right.tab("Clean start") if not cutting else hidden)
+        self.build_trim(self.right.tab("Clean start / end") if not cutting else hidden)
         self.build_export(self.right.tab("Export"))
         self.build_dialogue(self.right.tab("Dialogue") if cutting else hidden)
 
@@ -362,16 +364,42 @@ class Studio(ctk.CTkFrame):
                              "At most the seconds above are cut. Applies to every ticked part when you export. "
                              "Switch it OFF and nothing is cut.",
                      text_color=GREY, wraplength=340, justify="left").pack(anchor="w", padx=10, pady=4)
+        ctk.CTkSwitch(f, text="Cut the silent / non-talking END of every video", variable=self.tend_on,
+                      text_color=TEXT).pack(anchor="w", padx=10, pady=(14, 4))
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(fill="x", padx=10, pady=4)
+        ctk.CTkLabel(row, text="Look only at the last", text_color=TEXT).pack(side="left")
+        ctk.CTkEntry(row, width=48, textvariable=self.tend_sec).pack(side="left", padx=6)
+        ctk.CTkLabel(row, text="seconds of every video", text_color=TEXT).pack(side="left")
+        ctk.CTkLabel(f, text="The video ends right after the last words (a short natural pause stays). Only the end is "
+                             "checked - the middle is never cut. The 'music / noise' tick above counts here too.",
+                     text_color=GREY, wraplength=340, justify="left").pack(anchor="w", padx=10, pady=4)
         ctk.CTkButton(f, text="Test on the part shown in the preview", height=36, command=self.trim_test).pack(
             fill="x", padx=10, pady=(8, 4))
         self.trim_result = ctk.CTkLabel(f, text="", text_color=GREY, wraplength=340, justify="left", anchor="w")
         self.trim_result.pack(fill="x", padx=10, pady=4)
 
-    def trim_seconds(self):
+    def trim_seconds(self, var=None):
         try:
-            return max(0.5, float(str(self.trim_sec.get()).replace(",", ".")))
+            return max(0.5, float(str((var or self.trim_sec).get()).replace(",", ".")))
         except ValueError:
             return 3.0
+
+    @staticmethod
+    def trim_both(movie, a, b, head, tail, voice, log):
+        """head / tail: seconds to look at (None = off). Returns (new_start, new_end, [info texts]). Worker thread."""
+        work = os.path.join(E.OUTPUT_DIR, "_trim_work")
+        info, new_a, new_b = [], a, b
+        try:
+            if head is not None:
+                new_a, why = dialogue.trim_start(movie, a, b, head, voice, -35.0, work, log)
+                info.append(f"start: {why}")
+            if tail is not None:
+                new_b, why = dialogue.trim_end(movie, new_a, b, tail, voice, -35.0, work, log)
+                info.append(f"end: {why}")
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        return new_a, new_b, info
 
     @staticmethod
     def trim_one(movie, a, b, seconds, voice, log):
@@ -388,14 +416,15 @@ class Studio(ctk.CTkFrame):
             return
         part = dict(self.current_part())
         movie, n = self.movie, self.part_idx + 1
-        secs, voice = self.trim_seconds(), bool(self.trim_voice.get())
-        self.trim_result.configure(text="Checking the start of the shown part ...")
+        head, tail = self.trim_seconds(), self.trim_seconds(self.tend_sec)
+        voice = bool(self.trim_voice.get())
+        self.trim_result.configure(text="Checking the start and the end of the shown part ...")
 
         def work():
             try:
-                new, why = self.trim_one(movie, part["start"], part["end"], secs, voice, lambda m: None)
-                self.q.put(("trim", f"Part {n}: " + (f"starts {new - part['start']:.2f} s later - {why}"
-                                                      if new > part["start"] else why)))
+                a, b, info = self.trim_both(movie, part["start"], part["end"], head, tail, voice, lambda m: None)
+                self.q.put(("trim", f"Part {n}: " + "; ".join(info) +
+                            f"  ->  {b - a:.1f}s of {part['end'] - part['start']:.1f}s kept"))
             except Exception as e:
                 self.q.put(("trim", f"Part {n}: check failed ({str(e)[:160]})"))
         threading.Thread(target=work, daemon=True).start()
@@ -403,22 +432,23 @@ class Studio(ctk.CTkFrame):
     def trim_prepare(self, movie, log, items_snapshot):
         """Simple Edit: for ONE part at a time, moves its start to where the talking starts (only the first seconds
         are looked at). Texts and overlays are re-timed from the new start."""
-        if self.mode != "simple" or not self.trim_on.get():
+        if self.mode != "simple" or not (self.trim_on.get() or self.tend_on.get()):
             return None
-
-        secs, voice = self.trim_seconds(), bool(self.trim_voice.get())      # read here: prep runs in a worker thread
+        # read here: prep runs in a worker thread
+        head = self.trim_seconds() if self.trim_on.get() else None
+        tail = self.trim_seconds(self.tend_sec) if self.tend_on.get() else None
+        voice = bool(self.trim_voice.get())
 
         def prep(plan):
             a, b = plan["start"], plan["end"]
-            new, why = self.trim_one(movie, a, b, secs, voice, log)
-            if new <= a:
-                log(f"Clean start: {plan['file']} - {why}")
+            new, new_b, info = self.trim_both(movie, a, b, head, tail, voice, log)
+            log(f"Clean start / end: {plan['file']} - " + "; ".join(info))
+            if new <= a and new_b >= b:
                 return plan
-            log(f"Clean start: {plan['file']} - {why}")
             ovs, txs = auto_short.relative_items(items_for(items_snapshot, plan.get("ov", True), plan.get("txo")),
-                                                 b - new, plan["number"])
+                                                 new_b - new, plan["number"])
             off = lambda L: [dict(d, start=d["start"] + new, end=d["end"] + new) for d in L]
-            return dict(plan, start=new, pieces=[(new, b - new)], overlays=off(ovs), texts=off(txs))
+            return dict(plan, start=new, end=new_b, pieces=[(new, new_b - new)], overlays=off(ovs), texts=off(txs))
         return prep
 
     # ---------------- right: silence
@@ -923,7 +953,8 @@ class Studio(ctk.CTkFrame):
             if it["kind"] != kind:
                 continue
             n += 1
-            label = (os.path.basename(it["path"]) if kind == "overlay" else str(it["text"]).strip()[:36] or "(empty)")
+            label = (os.path.basename(it["path"]) if kind == "overlay" else
+                     E.strip_colors(str(it["text"])).strip()[:36] or "(empty)")
             ctk.CTkRadioButton(box, text=f"{n}. {label}", value=idx, variable=self._sel_var(kind),
                                command=lambda i=idx: self.select(i)).pack(anchor="w", padx=6, pady=2)
         if n == 0:
@@ -1107,6 +1138,45 @@ class Studio(ctk.CTkFrame):
             typed()
         ctk.CTkButton(box, text="Make selected number = part number", command=make_number).pack(
             anchor="w", padx=8, pady=(4, 0))
+
+        def colour_words():
+            inner = getattr(tb, "_textbox", tb)
+            try:
+                rng = inner.tag_ranges("sel")
+            except Exception:
+                rng = ()
+            if not rng:
+                messagebox.showinfo("Word colour", "First select the word(s) inside the text with the mouse, then "
+                                                   "press this button and choose the colour.")
+                return
+            a, b = str(rng[0]), str(rng[1])
+            word = inner.get(a, b)
+            if not word.strip():
+                return
+            from tkinter import colorchooser
+            res = colorchooser.askcolor(color="#FFD400", title="Colour of the selected word(s)")
+            if not res or not res[1]:
+                return
+            word = engine_strip(word)                      # re-colouring a coloured word replaces its colour
+            inner.delete(a, b)
+            inner.insert(a, "{c=%s}%s{/c}" % (str(res[1]).upper(), word))
+            typed()
+
+        def clear_colours():
+            txt = tb.get("1.0", "end").strip("\n")
+            tb.delete("1.0", "end")
+            tb.insert("1.0", engine_strip(txt))
+            typed()
+        engine_strip = E.strip_colors
+        crow = ctk.CTkFrame(box, fg_color="transparent")
+        crow.pack(fill="x", padx=8, pady=(6, 0))
+        ctk.CTkButton(crow, text="Colour selected word(s)", command=colour_words).pack(side="left")
+        ctk.CTkButton(crow, text="Remove word colours", fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
+                      command=clear_colours).pack(side="left", padx=6)
+        ctk.CTkLabel(box, text="Select one or more words with the mouse and press 'Colour selected word(s)': only those "
+                               "words get the new colour, the rest of the line keeps the text colour. In the box it "
+                               "looks like {c=#FF0000}word{/c} - that is the colour mark, the video shows only the word.",
+                     text_color=GREY, wraplength=340, justify="left", anchor="w").pack(anchor="w", padx=8, pady=(2, 4))
         ctk.CTkLabel(box, text="Select only the number in your text (the 1 in 'Part 1 finding best movie') and press "
                                "the button. It becomes {n}: 1 in the first part, 2 in the second, 3 ... The rest of "
                                "the text stays the same in every video. You can also type {n} yourself.",
@@ -1901,7 +1971,8 @@ class Studio(ctk.CTkFrame):
                           whisper=bool(self.dl_whisper.get()), pad=float(self.dl_pad.get()),
                           minsil=float(self.dl_minsil.get()), remove=self.dl_remove.get(), lang=self.dl_lang.get(),
                           minpiece=float(self.dl_minpiece.get()), scan=bool(self.dl_scan.get())),
-            trim=dict(on=bool(self.trim_on.get()), sec=self.trim_seconds(), voice=bool(self.trim_voice.get())),
+            trim=dict(on=bool(self.trim_on.get()), sec=self.trim_seconds(), voice=bool(self.trim_voice.get()),
+                      end_on=bool(self.tend_on.get()), end_sec=self.trim_seconds(self.tend_sec)),
             exported=sorted(self.done_names), resume=bool(self.resume_on.get()),
             right_tab=self.right.get())
         if self.mode == "simple":
@@ -2025,6 +2096,8 @@ class Studio(ctk.CTkFrame):
         self.trim_on.set(bool(tr.get("on", False)))
         self.trim_sec.set(f"{float(tr.get('sec', 3)):g}")
         self.trim_voice.set(bool(tr.get("voice", True)))
+        self.tend_on.set(bool(tr.get("end_on", False)))
+        self.tend_sec.set(f"{float(tr.get('end_sec', 3)):g}")
 
     def _restore_view(self, st):
         self.sel = None

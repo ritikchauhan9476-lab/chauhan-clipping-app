@@ -42,14 +42,28 @@ def pick_group(buf, min_len, max_len, final=False):
         return None
     if total < min_len:
         return None
+    # end the short at the BIGGEST pause after the minimum length (a pause = the end of a sentence), never in the
+    # middle of talking when a pause exists; a long pause (>= GOOD_GAP) later on wins a tie
     best_k, best_gap, acc = n, -1.0, 0.0
     for k in range(1, n + 1):
         acc += buf[k - 1][1] - buf[k - 1][0]
         if acc >= min_len and k < len(buf):
             gap = buf[k][0] - buf[k - 1][1]
-            if gap >= GOOD_GAP and gap >= best_gap:
+            if gap >= best_gap or (gap >= GOOD_GAP and best_gap >= GOOD_GAP):
                 best_k, best_gap = k, gap
     return buf[:best_k], buf[best_k:]
+
+
+END_HOLD = 0.3             # the last words of a short get this much more time (if the pause allows it)
+
+
+def hold_end(group, rest, limit):
+    """The end of a short: a little extra time after the last word, but never into the next dialogue piece."""
+    if not group:
+        return group
+    s, e = group[-1]
+    room = (rest[0][0] - 0.05) if rest else limit
+    return group[:-1] + [(s, max(e, min(e + END_HOLD, room)))]
 
 
 def limit_pieces(pieces, max_n=MAX_PIECES):
@@ -90,6 +104,11 @@ class AutoShortJob:
                  all_ranges=None, index_base=0, prior_made=None, on_resume=None):
         self.movie, self.ranges = movie, ranges
         self.opts, self.items, self.out_dir = dict(opts), items, out_dir
+        # fewer flash cuts / nothing important lost: tiny pauses are not cut, sentence ends get more time,
+        # soft talking counts as talking (each can be changed in the Auto Short panel)
+        self.opts.setdefault("tail_ms", 350)
+        self.opts.setdefault("min_cut_ms", 500)
+        self.opts.setdefault("vad_threshold", 0.45)
         self.log, self.progress, self.on_short = log, progress, on_short
         self.min_len, self.max_len = float(min_len), float(max_len)
         self.number = int(first_number)
@@ -183,6 +202,7 @@ class AutoShortJob:
                 if not g:
                     break
                 group, buf = g
+                group = hold_end(group, buf, b)
                 if not self.render(group):                      # stopped in the middle: the group is still to do
                     buf = group + buf
                 self.mark(min(buf[0][0], t) if buf else t)
@@ -195,6 +215,7 @@ class AutoShortJob:
             g = pick_group(buf, self.min_len, self.max_len, final=True)
             if g:
                 group, buf = g
+                group = hold_end(group, buf, b)
                 if not self.render(group):
                     buf = group + buf
                     self.mark(buf[0][0])

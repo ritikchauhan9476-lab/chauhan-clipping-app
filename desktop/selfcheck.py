@@ -323,6 +323,45 @@ def t_resume_and_text_per_video():
     return f"stopped after {n_done} part(s) ('{stopped_status[:30]}'), second export did the rest (6 files); text hidden / own words per video OK"
 
 
+def t_word_colour_and_clean_end():
+    """Simple Edit: (1) only the selected words get their colour; (2) the silent end of a video is cut, only the end.
+    Auto Short: a short ends at the biggest pause, tiny pauses are not cut (no flash cuts)."""
+    import engine as E
+    import dialogue as D
+    import auto_short as AS
+    # (2) test movie: tone 0-2 s, silence 2-3 s, tone 3-5 s, silence 5-6 s ...
+    new_b, why = D.trim_end(movie, 0.0, 6.0, 3.0, False, -35.0, os.path.join(tmp, "te"), print)
+    assert 5.0 < new_b < 5.6, (new_b, why)
+    same, why2 = D.trim_end(movie, 0.0, 4.8, 3.0, False, -35.0, os.path.join(tmp, "te"), print)
+    assert same == 4.8, (same, why2)
+    # Auto Short helpers
+    assert D.tidy([(0, 1), (1.3, 2), (2.1, 2.3), (5, 9)], 0, 10, 1.0, 0.5) == [(0, 2.3), (5, 9)]
+    g, rest = AS.pick_group([(0, 10), (10, 20), (20.2, 30), (30, 40), (41.5, 50), (50, 55), (55.1, 62)], 30, 59)
+    assert g[-1] == (30, 40) and rest[0] == (41.5, 50), (g, rest)
+    # (1) a red word on a black picture
+    black = os.path.join(tmp, "black.mp4")
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=640x360:r=25:d=3",
+                    "-c:v", "libx264", "-preset", "ultrafast", black], check=True, creationflags=E.NOWIN)
+    info = E.probe_info(black)
+    cpu = [c for c in E.CODECS if "CPU" in c][0]
+    s = E.sanitize({"resolution": "480p", "codec": cpu, "aspect": "9:16"})
+    s["texts"] = [dict(E.TEXT_DEFAULT, kind="text", text="Part 1 {c=#FF0000}finding{/c} best", pos="Center", size=4.0,
+                       outline=0, shadow=False, start=0.0, end=3.0)]
+    jpg = os.path.join(tmp, "colour.jpg")
+    cmd, tmpf = E.build_command(black, 0.0, 2.0, jpg, s, info, None, preview_t=1.0)
+    r = subprocess.run(cmd, capture_output=True, creationflags=E.NOWIN)
+    assert r.returncode == 0, r.stderr.decode(errors="ignore")[-600:]
+    from PIL import Image
+    im = Image.open(jpg).convert("RGB")
+    px = list(im.getdata())
+    red = sum(1 for r_, g_, b_ in px if r_ > 170 and g_ < 90 and b_ < 90)
+    white = sum(1 for r_, g_, b_ in px if r_ > 200 and g_ > 200 and b_ > 200)
+    assert red > 80 and white > 80, f"red word {red} px, white words {white} px"
+    from PIL import features
+    return (f"clean end {6.0 - new_b:.2f}s cut; red word {red} px + white words {white} px; "
+            f"short ends at the biggest pause; Pillow text shaping (Hindi widths): {features.check('raqm')}")
+
+
 def t_many_pieces():
     import engine as E
     cpu = [c for c in E.CODECS if "CPU" in c][0]
@@ -413,6 +452,7 @@ step("window and Cutting ON/OFF switches", t_window)
 step("Simple Edit: export button, 2 parts", t_simple_export_in_window)
 step("Simple Edit: clean start + overlay only on ticked videos", t_clean_start_and_overlay_flags)
 step("Simple Edit: stop + continue, text per video", t_resume_and_text_per_video)
+step("word colour, clean end, auto short ends", t_word_colour_and_clean_end)
 step("silence cut, one part at a time (AI Clipping)", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)
 step("400 pieces in one clip (long filter graph)", t_many_pieces)

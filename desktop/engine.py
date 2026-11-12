@@ -259,6 +259,82 @@ def resolve_font(name):
     return next(iter(fonts.values()), None)
 
 
+# ---------------------------------------------------------------- coloured words inside a text
+COLOR_TAG = re.compile(r"\{c=#?([0-9A-Fa-f]{6})\}(.*?)\{/c\}", re.S)
+
+
+def strip_colors(text):
+    """'Hello {c=#FF0000}world{/c}' -> 'Hello world'."""
+    return COLOR_TAG.sub(lambda m: m.group(2), str(text))
+
+
+def color_lines(text, base):
+    """Text with {c=#RRGGBB}words{/c} tags -> [[(run text, '#RRGGBB'), ...] per line]."""
+    runs, pos = [], 0
+    for m in COLOR_TAG.finditer(text):
+        if m.start() > pos:
+            runs.append((text[pos:m.start()], base))
+        runs.append((m.group(2), "#" + m.group(1).upper()))
+        pos = m.end()
+    if pos < len(text):
+        runs.append((text[pos:], base))
+    lines = [[]]
+    for t, c in runs:
+        for i, chunk in enumerate(t.split("\n")):
+            if i:
+                lines.append([])
+            if chunk:
+                lines[-1].append((chunk, c))
+    return lines
+
+
+def color_text_layout(t, OW, OH):
+    """Where every coloured run of a text goes: [(run, colour, x, y)], plus font file and size. Widths are measured
+    with the same font file, so the words sit next to each other like one text. None = cannot (no font file)."""
+    try:
+        from PIL import ImageFont
+    except ImportError:
+        return None
+    ff = resolve_font(t["font"])
+    if not ff:
+        return None
+    fs = max(8, int(OH * float(t["size"]) / 100))
+    try:
+        font = ImageFont.truetype(ff, fs)
+    except Exception:
+        return None
+    lines = color_lines(str(t["text"]).strip("\n"), t["color"])
+    asc, desc = font.getmetrics()
+    line_h = asc + desc
+    plain = ["".join(r for r, _ in ln) for ln in lines]
+    widths = [font.getlength(p) for p in plain]
+    bw, bh = max(widths or [0]), line_h * len(lines)
+    mx, my = int(OW * 0.04), int(OH * 0.05)
+    if t["pos"] == "Custom":
+        x0, y0 = OW * float(t["x"]) / 100, OH * float(t["y"]) / 100
+    elif t["pos"] == "Center":
+        x0, y0 = (OW - bw) / 2, (OH - bh) / 2
+    else:
+        vert, horz = t["pos"].split("-")
+        x0 = {"Left": mx, "Center": (OW - bw) / 2, "Right": OW - bw - mx}[horz]
+        y0 = {"Top": my, "Middle": (OH - bh) / 2, "Bottom": OH - bh - my}[vert]
+    if t.get("hcenter"):
+        x0 = (OW - bw) / 2
+    if t.get("vcenter"):
+        y0 = (OH - bh) / 2
+    out = []
+    for li, ln in enumerate(lines):
+        k = 0
+        for run, col in ln:
+            lead = len(run) - len(run.lstrip(" "))
+            body = run.strip(" ")
+            if body:
+                x = x0 + font.getlength(plain[li][:k + lead])
+                out.append((body, col, int(round(x)), int(round(y0 + li * line_h))))
+            k += len(run)
+    return dict(runs=out, font=ff, size=fs)
+
+
 # ---------------------------------------------------------------- ffmpeg helpers
 def ev(x):
     return max(2, int(round(x / 2.0)) * 2)
@@ -706,26 +782,42 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
         if sp is None:
             continue
         tst, ten = sp
-        fd, tp = tempfile.mkstemp(suffix=".txt", prefix="vc_")
-        os.write(fd, str(t["text"]).strip("\n").encode("utf-8"))
-        os.close(fd)
-        tmp.append(tp)
         fs = max(8, int(OH * float(t["size"]) / 100))
         sc = OH / 1080.0
+        style = []
+        if float(t["outline"]) > 0:
+            style += [f"borderw={max(1, int(round(float(t['outline']) * sc)))}",
+                      f"bordercolor={hex0x(t['outline_color'], '000000')}"]
+        if t["shadow"]:
+            style += [f"shadowx={max(1, int(3*sc))}", f"shadowy={max(1, int(3*sc))}", "shadowcolor=0x000000@0.6"]
+        if t["box"]:
+            style += ["box=1", f"boxcolor={hex0x(t['box_color'], '000000')}@{max(0, min(100, float(t['box_opacity'])))/100:.2f}",
+                      f"boxborderw={int(fs*0.3)}"]
+        alpha = max(0, min(100, float(t["opacity"]))) / 100
+        if COLOR_TAG.search(str(t["text"])):
+            lay = color_text_layout(t, OW, OH)
+            if lay:                      # coloured words: every run of one colour is its own drawtext, side by side
+                for run, col, x, y in lay["runs"]:
+                    fd, tp = tempfile.mkstemp(suffix=".txt", prefix="vc_")
+                    os.write(fd, run.encode("utf-8"))
+                    os.close(fd)
+                    tmp.append(tp)
+                    add("drawtext=" + ":".join([f"fontfile={fe(lay['font'])}", f"textfile={fe(tp)}",
+                                                f"fontsize={lay['size']}", f"fontcolor={hex0x(col)}@{alpha:.2f}"]
+                                               + style + [f"x={x}", f"y={y}", "y_align=font",
+                                                          f"enable='between(t,{tst:.3f},{ten:.3f})'"]))
+                continue
+        fd, tp = tempfile.mkstemp(suffix=".txt", prefix="vc_")
+        os.write(fd, strip_colors(str(t["text"])).strip("\n").encode("utf-8"))
+        os.close(fd)
+        tmp.append(tp)
         parts = []
         ff = resolve_font(t["font"])
         if ff:
             parts.append(f"fontfile={fe(ff)}")
         parts += [f"textfile={fe(tp)}", f"fontsize={fs}",
-                  f"fontcolor={hex0x(t['color'])}@{max(0, min(100, float(t['opacity'])))/100:.2f}"]
-        if float(t["outline"]) > 0:
-            parts += [f"borderw={max(1, int(round(float(t['outline']) * sc)))}",
-                      f"bordercolor={hex0x(t['outline_color'], '000000')}"]
-        if t["shadow"]:
-            parts += [f"shadowx={max(1, int(3*sc))}", f"shadowy={max(1, int(3*sc))}", "shadowcolor=0x000000@0.6"]
-        if t["box"]:
-            parts += ["box=1", f"boxcolor={hex0x(t['box_color'], '000000')}@{max(0, min(100, float(t['box_opacity'])))/100:.2f}",
-                      f"boxborderw={int(fs*0.3)}"]
+                  f"fontcolor={hex0x(t['color'])}@{alpha:.2f}"]
+        parts += style
         mx, my = int(OW * 0.04), int(OH * 0.05)
         px = {"Left": str(mx), "Center": "(w-text_w)/2", "Right": f"w-text_w-{mx}"}
         py = {"Top": str(my), "Middle": "(h-text_h)/2", "Bottom": f"h-text_h-{my}"}
