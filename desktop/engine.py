@@ -17,7 +17,8 @@ NOWIN = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 FOCUS = ["Funny", "Emotional", "Funny + Emotional"]
 LANGS = ["hi", "en", "auto"]
 WHISPER = ["tiny", "base", "small", "medium"]
-ASPECTS = ["Original", "1:1", "4:3", "3:2", "16:9", "9:16", "4:5", "21:9"]
+ASPECTS = ["Original", "1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "4:5", "5:4", "21:9"]
+ROTATIONS = ["No rotation", "90° right", "180°", "90° left"]
 FIT_MODES = ["Crop (fill frame)", "Blur background", "Black bars", "Solid colour"]
 RES = ["Original", "480p", "720p", "1080p", "1440p", "2160p (4K)"]
 FPS = ["Original", "24", "25", "30", "50", "60"]
@@ -74,6 +75,10 @@ DEFAULTS = dict(
     # size / crop
     src_aspect="Original", aspect="Original", fit_mode="Blur background", resolution="Original", fps="Original",
     zoom=1.0, crop_x=50, crop_y=50,
+    # pro editing: rotate / flip / free crop / speed / fades / effects
+    rotate="No rotation", flip_h=False, flip_v=False, crop_l=0.0, crop_r=0.0, crop_t=0.0, crop_b=0.0,
+    speed=1.0, vfade_in=0.0, vfade_out=0.0, fx_bw=False, fx_sepia=False, fx_blur=0.0, fx_denoise=False,
+    fx_stab=False,
     bg_color="#1E1E1E", blur_amount=25, fit_scale=100.0, fit_y=50.0,   # background of the final frame
     **CL.NEW_DEFAULTS,                                                  # tint, exposure, shadows, ... (colour.py)
     # chroma key
@@ -89,7 +94,7 @@ DEFAULTS = dict(
     rate_mode="Exact bitrate (use my number)",
     fade_sec=0.15,
 )
-CHOICES = {"src_aspect": ASPECTS, "aspect": ASPECTS, "fit_mode": FIT_MODES, "resolution": RES, "fps": FPS,
+CHOICES = {"rotate": ROTATIONS, "src_aspect": ASPECTS, "aspect": ASPECTS, "fit_mode": FIT_MODES, "resolution": RES, "fps": FPS,
            "codec": CODECS, "rate_mode": RATE_MODES, "audio_bitrate": ABR, "focus": FOCUS, "language": LANGS,
            "whisper_model": WHISPER, "music_mode": MUSIC_MODES, "chroma_bg_type": BG_TYPES}
 
@@ -473,6 +478,67 @@ def key_chain(s):
             c += ",despill=type=blue"
     return c
 
+def free_crop_box(s, sw, sh):
+    """Free crop: % cut from each side (left / right / top / bottom). Returns (x, y, w, h) even numbers."""
+    l, r = (max(0.0, min(45.0, float(s.get(k, 0) or 0))) / 100 for k in ("crop_l", "crop_r"))
+    t, b = (max(0.0, min(45.0, float(s.get(k, 0) or 0))) / 100 for k in ("crop_t", "crop_b"))
+    w, h = max(16, int(sw * (1 - l - r)) // 2 * 2), max(16, int(sh * (1 - t - b)) // 2 * 2)
+    return int(sw * l) // 2 * 2, int(sh * t) // 2 * 2, w, h
+
+
+def geometry_filters(s, sw, sh):
+    """Rotate, flip, free crop, stabilise, denoise of the imported movie. Returns (filters, new_w, new_h)."""
+    f = []
+    if s.get("fx_stab"):
+        f.append("deshake=rx=32:ry=32:edge=mirror")
+    if s.get("fx_denoise"):
+        f.append("hqdn3d=3:3:6:6")
+    rot = str(s.get("rotate", "No rotation"))
+    if rot.startswith("90° right"):
+        f.append("transpose=1")
+        sw, sh = sh, sw
+    elif rot.startswith("90° left"):
+        f.append("transpose=2")
+        sw, sh = sh, sw
+    elif rot.startswith("180"):
+        f.append("hflip,vflip")
+    if s.get("flip_h"):
+        f.append("hflip")
+    if s.get("flip_v"):
+        f.append("vflip")
+    x, y, w, h = free_crop_box(s, sw, sh)
+    if (w, h) != (sw, sh):
+        f.append(f"crop={w}:{h}:{x}:{y}")
+        sw, sh = w, h
+    return f, sw, sh
+
+
+def effect_filters(s):
+    """Look effects on the picture: black & white, sepia, blur."""
+    f = []
+    if s.get("fx_bw"):
+        f.append("hue=s=0")
+    if s.get("fx_sepia"):
+        f.append("colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131")
+    b = float(s.get("fx_blur", 0) or 0)
+    if b > 0:
+        f.append(f"gblur=sigma={b * 0.4:.2f}")
+    return f
+
+
+def atempo_chain(speed):
+    """atempo only takes 0.5 - 2.0 per step: 4x = 2.0,2.0 ; 0.25x = 0.5,0.5."""
+    out, sp = [], float(speed)
+    while sp > 2.0:
+        out.append("atempo=2.0")
+        sp /= 2.0
+    while sp < 0.5:
+        out.append("atempo=0.5")
+        sp /= 0.5
+    out.append(f"atempo={sp:.4f}")
+    return ",".join(out)
+
+
 def source_crop_box(s, sw, sh):
     """Crop of the imported movie: ratio (src_aspect), zoom and position (crop_x / crop_y in %).
     Returns (x, y, w, h), all even numbers, inside the source frame."""
@@ -837,7 +903,7 @@ def text_filters(t, OW, OH, tst, ten, tmp):
     return layers(_tf(tmp, text), t["color"], f"{xe}+{dx_e}", f"{ye}+{dy_e}", whole)
 
 
-def build_command(movie, start, dur, out, s, info, crop=None, codec=None, preview_t=None, pieces=None):
+def build_command(movie, start, dur, out, s, info, crop=None, codec=None, preview_t=None, pieces=None, live=None):
     """One ffmpeg command for the clip [start, start+dur]. Timeline items are movie-absolute and are
     shifted to clip time here. Order: auto-crop > colour > chroma > aspect/crop > overlays > text > audio.
 
@@ -863,6 +929,8 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
         if m:
             sw, sh = int(m.group(1)), int(m.group(2))
             pre.append(crop)
+    geo, sw, sh = geometry_filters(s, sw, sh)
+    pre += geo
     pre.append("setsar=1")
     fl.append(f"{vin}{','.join(pre)}[v0]")
 
@@ -897,7 +965,7 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
         st["cur"] = lab
 
     # colour correction
-    cf = color_filters(s, sw)
+    cf = color_filters(s, sw) + effect_filters(s)
     if cf:
         add(",".join(cf))
 
@@ -1019,11 +1087,31 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
         lab = newlab()
         fl.append(f"{st['cur']}[pbar]overlay=x='-w+w*t/{dur:.3f}':y=0:shortest=1:format=auto{lab}")
         st["cur"] = lab
-    fl.append(f"{st['cur']}format=yuv420p[vout]")
+    speed = max(0.25, min(4.0, float(s.get("speed", 1.0) or 1.0)))
+    endf = []
+    fi, fo = float(s.get("vfade_in", 0) or 0), float(s.get("vfade_out", 0) or 0)
+    if fi > 0:
+        endf.append(f"fade=t=in:st=0:d={min(fi, dur / 2):.3f}")
+    if fo > 0:
+        endf.append(f"fade=t=out:st={max(0.0, dur - min(fo, dur / 2)):.3f}:d={min(fo, dur / 2):.3f}")
+    if abs(speed - 1.0) > 1e-3:
+        endf.append(f"setpts=PTS/{speed:.4f}")
+    if live:                                   # live player: small RGB frames to a pipe
+        fr = min(30.0, frame_rate(info) or 25.0)
+        k = min(live["box"][0] / OW, live["box"][1] / OH, 1.0)
+        live.update(w=max(2, int(OW * k) // 2 * 2), h=max(2, int(OH * k) // 2 * 2), fps=fr, speed=speed)
+        endf += [f"fps={fr:.3f}", f"scale={live['w']}:{live['h']}:flags=fast_bilinear", "format=rgb24"]
+    else:
+        endf.append("format=yuv420p")
+    fl.append(f"{st['cur']}{','.join(endf)}[vout]")
 
     # audio: original track (optional) + any number of audio layers, mixed
     ff = max(0.005, float(s.get("fade_sec", 0.15)))
-    fades = f"afade=t=in:d={ff:.3f},afade=t=out:st={max(0.0, dur - ff):.3f}:d={ff:.3f}"
+    fai, fao = max(ff, min(fi, dur / 2)), max(ff, min(fo, dur / 2))      # a picture fade fades the sound too
+    fades = f"afade=t=in:d={fai:.3f},afade=t=out:st={max(0.0, dur - fao):.3f}:d={fao:.3f}"
+    if abs(speed - 1.0) > 1e-3:
+        fades += "," + atempo_chain(speed)
+    a_lines0 = len(fl)
     amap = ["-an"]
     if preview_t is None:
         auds = []
@@ -1069,11 +1157,20 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
         cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-ss", f"{start:.2f}", "-t", f"{dur:.2f}", "-i", movie]
     for a in inp:
         cmd += a
-    cmd += filter_complex_args(";".join(fl), tmp) + ["-map", "[vout]"]
+    cmd += filter_complex_args(";".join(fl[:a_lines0] if live else fl), tmp) + ["-map", "[vout]"]
+    if live:
+        cmd += ["-an", "-f", "rawvideo", "-"]
+        # the sound of the same edit (music, audio layers, volume, fades, speed) as a WAV file
+        if amap != ["-an"]:
+            a_cmd = (cmd[:cmd.index("-i") + 2] + [x for a in inp for x in a]
+                     + filter_complex_args(";".join(fl[a_lines0:]), tmp)
+                     + ["-map", "[aout]", "-vn", "-c:a", "pcm_s16le", "-ar", "44100", "-ac", "2", live["wav"]])
+            live["audio_cmd"] = a_cmd
+        return cmd, tmp
     if preview_t is not None:
-        cmd += ["-an", "-ss", f"{preview_t:.2f}", "-frames:v", "1", "-q:v", "3", out]
+        cmd += ["-an", "-ss", f"{preview_t / speed:.2f}", "-frames:v", "1", "-q:v", "3", out]
     else:
-        cmd += amap + ["-t", f"{dur:.3f}"] + encoder_args(s, codec) + ["-movflags", "+faststart", out]
+        cmd += amap + ["-t", f"{dur / speed:.3f}"] + encoder_args(s, codec) + ["-movflags", "+faststart", out]
     return cmd, tmp
 
 

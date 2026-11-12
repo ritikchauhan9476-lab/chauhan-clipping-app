@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
 import engine as E
 import preview as P
+import player as PL
 from widgets import (NEON, NEON_D, NEON_H, BLACK, PANEL, FIELD, GREY, TEXT, EDGE, DANGER, DANGER_H,
                      QUIET, QUIET_H, IMG_VID, NumField, Form, FontPicker, conv, open_path, hex_to_rgb)
 
@@ -73,6 +74,14 @@ class Studio(ctk.CTkFrame):
         self.eng = None
         self.ai_eng = None
         self.renderer = P.Renderer(lambda img, tok, err: self.q.put(("frame", (img, tok, err))))
+        self.player = PL.LivePlayer()                 # live playback with every edit (play / pause)
+        self.playing = False
+        self.play_after = None
+        self.play_from = 0.0
+        self.play_loop = tk.BooleanVar(value=False)
+        self.play_mute = tk.BooleanVar(value=False)
+        self.play_next = tk.BooleanVar(value=False)
+        self.pro_fields = {}
         self.token, self.shown = 0, -1
         self.render_after = None
         self._photo = None
@@ -113,7 +122,7 @@ class Studio(ctk.CTkFrame):
         centre.grid_columnconfigure(0, weight=1)
         self.cv = tk.Canvas(centre, bg="#000000", highlightthickness=0, bd=0)
         self.cv.grid(row=0, column=0, sticky="nsew", padx=8, pady=(8, 4))
-        self.cv.bind("<Button-1>", self.on_press)
+        self.cv.bind("<Button-1>", lambda e: (self.cv.focus_set(), self.on_press(e)))
         self.cv.bind("<B1-Motion>", self.on_drag)
         self.cv.bind("<ButtonRelease-1>", self.on_release)
         self.cv.bind("<Configure>", lambda e: self.refresh_view())
@@ -129,10 +138,29 @@ class Studio(ctk.CTkFrame):
                                       fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
                                       command=self.toggle_pick)
         self.pick_btn.grid(row=0, column=2, padx=4)
-        self.hint = ctk.CTkLabel(centre, text="Tip: drag an overlay or text on the picture to move it. "
-                                              "Use the numbers on the right for exact position.",
-                                 text_color=GREY, anchor="w")
-        self.hint.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 6))
+        pb = ctk.CTkFrame(centre, fg_color="transparent")
+        pb.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 2))
+        ctk.CTkButton(pb, text="|<", width=40, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
+                      command=lambda: self.seek_to(0.0)).pack(side="left", padx=2)
+        ctk.CTkButton(pb, text="-5s", width=46, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
+                      command=lambda: self.seek_by(-5)).pack(side="left", padx=2)
+        self.play_btn = ctk.CTkButton(pb, text="▶  Play", width=110, command=self.toggle_play)
+        self.play_btn.pack(side="left", padx=2)
+        ctk.CTkButton(pb, text="+5s", width=46, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
+                      command=lambda: self.seek_by(5)).pack(side="left", padx=2)
+        self.play_time = ctk.CTkLabel(pb, text="00:00.0 / 00:00.0", text_color=TEXT, width=130)
+        self.play_time.pack(side="left", padx=6)
+        ctk.CTkCheckBox(pb, text="Loop", variable=self.play_loop, width=60, text_color=TEXT).pack(side="left", padx=2)
+        ctk.CTkCheckBox(pb, text="Next part", variable=self.play_next, width=80, text_color=TEXT).pack(side="left", padx=2)
+        ctk.CTkCheckBox(pb, text="Mute", variable=self.play_mute, width=60, text_color=TEXT).pack(side="left", padx=2)
+        self.hint = ctk.CTkLabel(centre, text="Play shows the part with every edit, animation and sound. Space = play / "
+                                              "pause, arrows = 1 s back / forward (click the picture first). Drag "
+                                              "an overlay or text on the picture to move it.",
+                                 text_color=GREY, anchor="w", wraplength=700, justify="left")
+        self.hint.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 6))
+        self.cv.bind("<space>", lambda e: (self.toggle_play(), "break")[1])
+        self.cv.bind("<Left>", lambda e: self.seek_by(-1))
+        self.cv.bind("<Right>", lambda e: self.seek_by(1))
 
         self.head_on = tk.BooleanVar(value=False)      # cut only the first N seconds of every part
         self.head_sec = tk.StringVar(value="3")
@@ -151,7 +179,7 @@ class Studio(ctk.CTkFrame):
         # Those two live in AI Clipping. (Their settings objects are still created, in a hidden frame, so the rest of the
         # program keeps working; they are never used in Simple Edit.)
         cutting = self.mode == "ai"
-        for name in ("Aspect & Crop", "Colour", "Overlay", "Text") + (("Silence",) if cutting else ()) + (("Clean start / end",) if not cutting else ()) + ("Export",) + (("Dialogue",) if cutting else ()):
+        for name in ("Aspect & Crop", "Colour", "Overlay", "Text") + (("Silence",) if cutting else ()) + (("Clean start / end",) if not cutting else ()) + ("Speed & Effects", "Export",) + (("Dialogue",) if cutting else ()):
             self.right.add(name)
         self.build_aspect(self.right.tab("Aspect & Crop"))
         self.build_colour(self.right.tab("Colour"))
@@ -160,6 +188,7 @@ class Studio(ctk.CTkFrame):
         hidden = ctk.CTkFrame(self)
         self.build_silence(self.right.tab("Silence") if cutting else hidden)
         self.build_trim(self.right.tab("Clean start / end") if not cutting else hidden)
+        self.build_fx(self.right.tab("Speed & Effects"))
         self.build_export(self.right.tab("Export"))
         self.build_dialogue(self.right.tab("Dialogue") if cutting else hidden)
 
@@ -244,6 +273,22 @@ class Studio(ctk.CTkFrame):
         inner = ctk.CTkFrame(f, fg_color="transparent")
         inner.pack(fill="x")
         fm = Form(inner, self.cfg_v, self.cfg, self.sync_cfg_and_render)
+        fm.header("ROTATE & FLIP")
+        fm.menu("Rotate", "rotate", E.ROTATIONS)
+        fm.check("Flip left-right (mirror)", "flip_h")
+        fm.check("Flip up-down", "flip_v")
+        fm.header("FREE CROP (cut the edges)")
+        fm.note("Cut any amount from each side of the movie (0 = nothing). Done before the crop ratio below.")
+        fc = ctk.CTkFrame(f, fg_color="transparent")
+        fc.pack(fill="x")
+        for key, label in (("crop_l", "Cut left %"), ("crop_r", "Cut right %"), ("crop_t", "Cut top %"),
+                           ("crop_b", "Cut bottom %")):
+            nf = NumField(fc, label, 0, 45, 0.5, self.cfg[key], "{:.1f}", lambda v, k=key: self.set_cfg(k, v))
+            nf.pack(fill="x", padx=6, pady=2)
+            self.pro_fields[key] = nf
+        inner = ctk.CTkFrame(f, fg_color="transparent")
+        inner.pack(fill="x")
+        fm = Form(inner, self.cfg_v, self.cfg, self.sync_cfg_and_render)
         fm.header("1. IMPORTED MOVIE - crop it here")
         fm.menu("Crop ratio of the movie", "src_aspect", E.ASPECTS)
         fm.note("This crops the movie you imported. 1:1 = square picture from a 16:9 movie.")
@@ -281,6 +326,51 @@ class Studio(ctk.CTkFrame):
         ctk.CTkLabel(gg, text="Blur strength is used with Blur background. Movie size and up-down position work with "
                               "Blur, Black bars and Solid colour (100 % = as big as the frame allows).",
                      text_color=GREY, wraplength=330, justify="left", anchor="w").pack(anchor="w", padx=8, pady=(0, 6))
+
+    # ---------------- right: speed, fades, effects
+    def build_fx(self, tab):
+        f = self.scroll(tab)
+        ctk.CTkLabel(f, text="SPEED", font=ctk.CTkFont(size=13, weight="bold"), text_color=NEON).pack(
+            anchor="w", padx=10, pady=(10, 0))
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(fill="x", padx=6)
+        nf = NumField(row, "Speed (x)", 0.25, 4.0, 0.05, self.cfg["speed"], "{:.2f}", lambda v: self.set_cfg("speed", v))
+        nf.pack(fill="x", pady=2)
+        self.pro_fields["speed"] = nf
+        qr = ctk.CTkFrame(f, fg_color="transparent")
+        qr.pack(fill="x", padx=8, pady=2)
+        for v in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0):
+            ctk.CTkButton(qr, text=f"{v:g}x", width=50, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
+                          command=lambda v=v: (self.pro_fields["speed"].set(v), self.set_cfg("speed", v))).pack(
+                side="left", padx=2)
+        ctk.CTkLabel(f, text="The whole video (picture, sound, text) plays faster or slower; the voice keeps its "
+                             "pitch. 1.5x of a 60 s part = 40 s video. Play the part to hear it.",
+                     text_color=GREY, wraplength=340, justify="left", anchor="w").pack(anchor="w", padx=10, pady=2)
+        ctk.CTkLabel(f, text="FADE (start / end)", font=ctk.CTkFont(size=13, weight="bold"), text_color=NEON).pack(
+            anchor="w", padx=10, pady=(12, 0))
+        for key, label in (("vfade_in", "Fade in from black (s)"), ("vfade_out", "Fade out to black (s)")):
+            nf = NumField(f, label, 0, 5, 0.1, self.cfg[key], "{:.1f}", lambda v, k=key: self.set_cfg(k, v))
+            nf.pack(fill="x", padx=6, pady=2)
+            self.pro_fields[key] = nf
+        ctk.CTkLabel(f, text="0 = off. The sound fades with the picture.", text_color=GREY, anchor="w").pack(
+            anchor="w", padx=10)
+        ctk.CTkLabel(f, text="EFFECTS", font=ctk.CTkFont(size=13, weight="bold"), text_color=NEON).pack(
+            anchor="w", padx=10, pady=(12, 0))
+        inner = ctk.CTkFrame(f, fg_color="transparent")
+        inner.pack(fill="x")
+        fm = Form(inner, self.cfg_v, self.cfg, self.sync_cfg_and_render)
+        fm.check("Black & white", "fx_bw")
+        fm.check("Sepia (old film)", "fx_sepia")
+        fm.check("Clean video noise (grainy / dark movies)", "fx_denoise")
+        fm.check("Stabilise shaky video (export is slower)", "fx_stab")
+        nf = NumField(f, "Blur the whole video", 0, 20, 0.5, self.cfg["fx_blur"], "{:.1f}",
+                      lambda v: self.set_cfg("fx_blur", v))
+        nf.pack(fill="x", padx=6, pady=2)
+        self.pro_fields["fx_blur"] = nf
+        ctk.CTkLabel(f, text="Grain, vignette, sharpness and all colour controls are in the Colour tab. Rotate, flip "
+                             "and free crop are in Aspect & Crop. Stabilise and noise clean-up are seen in Play and "
+                             "the export (not in the still picture).",
+                     text_color=GREY, wraplength=340, justify="left", anchor="w").pack(anchor="w", padx=10, pady=(4, 8))
 
     # ---------------- right: colour correction (live)
     def build_colour(self, tab):
@@ -682,6 +772,8 @@ class Studio(ctk.CTkFrame):
             self.load_movie(self.movie_paths[name])
 
     def load_movie(self, path):
+        if getattr(self, "playing", False):
+            self.stop_play(render=False)
         try:
             info = E.probe_info(path)
         except Exception as e:
@@ -849,6 +941,8 @@ class Studio(ctk.CTkFrame):
         return {"start": 0.0, "end": self.dur, "on": True, "sil": False, "label": "whole movie"}
 
     def select_part(self, i):
+        if getattr(self, "playing", False):
+            self.stop_play(render=False)
         self.part_idx = i if self.parts else 0
         self.t_rel = 0.0
         p = self.current_part()
@@ -861,9 +955,115 @@ class Studio(ctk.CTkFrame):
         self.schedule_render()
 
     def on_pos_slider(self, v):
+        if self.playing:
+            self.stop_play()
         self.t_rel = float(v)
         self.pos_lbl.configure(text=f"Position: {tstr(self.t_rel)}")
         self.schedule_render()
+
+    # ================================================================ live player
+    def part_len(self):
+        p = self.current_part()
+        return max(0.0, p["end"] - p["start"])
+
+    def seek_to(self, t):
+        was = self.playing
+        if was:
+            self.stop_play()
+        self.t_rel = max(0.0, min(float(t), max(0.0, self.part_len() - 0.05)))
+        self.pos_slider.set(self.t_rel)
+        self.pos_lbl.configure(text=f"Position: {tstr(self.t_rel)}")
+        self.play_time.configure(text=f"{tstr(self.t_rel)} / {tstr(self.part_len())}")
+        if was:
+            self.start_play()
+        else:
+            self.schedule_render()
+
+    def seek_by(self, d):
+        self.seek_to(self.t_rel + d)
+
+    def toggle_play(self):
+        if self.playing:
+            self.stop_play()
+        else:
+            self.start_play()
+
+    def start_play(self):
+        if not self.movie or not self.parts:
+            messagebox.showwarning("Play", "Please choose a movie and make parts first.")
+            return
+        part = self.current_part()
+        L = self.part_len()
+        if self.t_rel >= L - 0.2:
+            self.t_rel = 0.0
+        s = self.preview_settings(part, self.part_number(self.part_idx))
+        if s["resolution"] not in ("480p",):
+            s["resolution"] = "480p"                 # small frames: plays in real time on any computer
+        s["_fast"] = True
+        try:
+            info = self.renderer._info_for(self.movie)
+        except Exception as e:
+            messagebox.showerror("Play", str(e))
+            return
+        cw, ch = max(200, self.cv.winfo_width()), max(150, self.cv.winfo_height())
+        self.play_from = self.t_rel
+        try:
+            self.player.start(self.movie, part["start"] + self.t_rel, L - self.t_rel, s, info, (cw, ch),
+                              mute=bool(self.play_mute.get()))
+        except Exception as e:
+            messagebox.showerror("Play", f"Could not start playing:\n{e}")
+            return
+        self.playing = True
+        self.cv.delete("box")
+        self.play_btn.configure(text="❚❚  Pause")
+        self.pos_lbl.configure(text="Loading ...")
+        self._play_tick()
+
+    def stop_play(self, render=True):
+        if self.play_after:
+            self.after_cancel(self.play_after)
+            self.play_after = None
+        self.player.stop()
+        if not self.playing:
+            return
+        self.playing = False
+        self.play_btn.configure(text="▶  Play")
+        self.pos_lbl.configure(text=f"Position: {tstr(self.t_rel)}")
+        if render:
+            self.schedule_render()                   # the still picture with the drag boxes again
+
+    def _play_tick(self):
+        self.play_after = None
+        if not self.playing:
+            return
+        img, t_out, finished = self.player.tick()
+        if self.player.error and finished:
+            err = self.player.error
+            self.stop_play()
+            messagebox.showerror("Play", "The player stopped:\n" + err[-300:])
+            return
+        if img is not None:
+            sp = self.player.live.get("speed", 1.0)
+            self.t_rel = min(self.part_len(), self.play_from + t_out * sp)
+            self.last_img = img
+            self.draw_image(img)
+            self.pos_slider.set(self.t_rel)
+            self.pos_lbl.configure(text=f"Position: {tstr(self.t_rel)}")
+            self.play_time.configure(text=f"{tstr(self.t_rel)} / {tstr(self.part_len())}")
+            self.frames_shown = getattr(self, "frames_shown", 0) + 1
+        if finished:
+            self.stop_play(render=False)
+            if self.play_next.get() and self.part_idx < len(self.parts) - 1:
+                self.select_part(self.part_idx + 1)
+                self.t_rel = 0.0
+                self.start_play()
+            elif self.play_loop.get():
+                self.t_rel = 0.0
+                self.start_play()
+            else:
+                self.schedule_render()
+            return
+        self.play_after = self.after(12, self._play_tick)
 
     # ================================================================ items (overlay / text)
     def part_number(self, index):
@@ -1497,7 +1697,7 @@ class Studio(ctk.CTkFrame):
     def draw_boxes(self):
         self.cv.delete("box")
         self.boxes = []
-        if not self.view or self.last_img is None:
+        if not self.view or self.last_img is None or self.playing:
             return
         ox, oy, dw, dh, W, H = self.view
         part = self.current_part()
@@ -1622,7 +1822,7 @@ class Studio(ctk.CTkFrame):
                              self.token)
 
     def show_frame(self, img, tok, err):
-        if tok < self.shown:
+        if tok < self.shown or self.playing:
             return
         self.shown = tok
         if err:
@@ -2121,6 +2321,8 @@ class Studio(ctk.CTkFrame):
 
     def clear_movie(self):
         """Back to 'no movie loaded' (used by New project)."""
+        if getattr(self, "playing", False):
+            self.stop_play(render=False)
         self.movie, self.info, self.dur = "", None, 0.0
         self.movie_menu.set("(no movie - put files in input_movies)")
         self.info_lbl.configure(text="No movie loaded")
@@ -2178,6 +2380,8 @@ class Studio(ctk.CTkFrame):
             nf.set(cfg[key])
         for key, nf in self.colour_fields.items():
             nf.set(CL.to_ui(key, cfg[key]))
+        for key, nf in self.pro_fields.items():
+            nf.set(cfg[key])
         self.cfg.clear()                       # after the variables: their callbacks also write into self.cfg
         self.cfg.update(cfg)
 

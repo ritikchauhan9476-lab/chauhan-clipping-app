@@ -1,6 +1,6 @@
 """Live preview: mirrors the export pipeline (colour -> chroma -> crop/aspect -> overlays -> text)
 using PIL/numpy so every slider change shows up almost instantly. Runs in a background thread."""
-import io, os, copy, subprocess, threading
+import io, os, copy, math, subprocess, threading
 from collections import OrderedDict
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -201,49 +201,98 @@ def overlay_on(canvas, ov, t, s, W, H):
 
 
 def text_on(canvas, tx, W, H):
+    """Same look as the export (engine.text_filters): case, bold / italic font, coloured words, alignment, line
+    spacing, outline, glow, shadow, box, underline. Animations are only seen in the live player."""
     tx = {**E.TEXT_DEFAULT, **tx}
-    text = str(tx["text"]).strip("\n")
-    if not text.strip():
+    text = E.apply_case(str(tx["text"]).strip("\n"), tx.get("case", "As typed"))
+    if not E.strip_colors(text).strip():
         return
-    fs = max(8, int(H * float(tx["size"]) / 100))
-    path = E.resolve_font(tx["font"])
+    ff, fake_bold, _ = E.styled_font(tx["font"], bool(tx.get("bold")), bool(tx.get("italic")))
+    lay = E.color_text_layout(tx, W, H, ff, text)
+    if not lay:
+        return
+    fs = lay["size"]
     try:
-        font = ImageFont.truetype(path, fs) if path else ImageFont.load_default(size=fs)
+        font = ImageFont.truetype(lay["font"], fs)
     except Exception:
-        font = ImageFont.load_default()
-    ow = float(tx["outline"])
-    sw = max(1, int(round(ow * H / 1080))) if ow > 0 else 0
-    spacing = int(fs * 0.15)
-    d0 = ImageDraw.Draw(canvas)
-    bb = d0.multiline_textbbox((0, 0), text, font=font, spacing=spacing, align="center", stroke_width=sw)
-    tw, th = bb[2] - bb[0], bb[3] - bb[1]
-    mx, my = int(W * 0.04), int(H * 0.05)
-    if tx["pos"] == "Custom":
-        x, y = int(W * float(tx["x"]) / 100), int(H * float(tx["y"]) / 100)
-    elif tx["pos"] == "Center":
-        x, y = (W - tw) // 2, (H - th) // 2
-    else:
-        vert, horz = tx["pos"].split("-")
-        x = {"Left": mx, "Center": (W - tw) // 2, "Right": W - tw - mx}[horz]
-        y = {"Top": my, "Middle": (H - th) // 2, "Bottom": H - th - my}[vert]
-    if tx.get("hcenter"):
-        x = (W - tw) // 2
-    if tx.get("vcenter"):
-        y = (H - th) // 2
-    pad = int(fs * 0.3)
+        return
+    sc = H / 1080.0
+    ow = max(1, int(round(float(tx["outline"]) * sc))) if float(tx["outline"]) > 0 else 0
+    fb = max(1, int(round(fs * 0.035))) if fake_bold else 0
+    alpha = int(max(0, min(100, float(tx["opacity"]))) * 2.55)
+    x0, y0, bw, bh = lay["block"]
+    if tx.get("glow"):
+        g = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        dg = ImageDraw.Draw(g)
+        gc = _hex(tx.get("glow_color"), "00E5FF")
+        gw = max(1, int(round(float(tx.get("glow_size", 8)) * sc)))
+        for run, col, x, y in lay["runs"]:
+            dg.text((x, y), run, font=font, fill=gc + (150,), stroke_width=gw + ow + fb, stroke_fill=gc + (150,))
+        canvas.alpha_composite(g.filter(ImageFilter.GaussianBlur(max(1, gw * 0.8))))
     layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    ox, oy = x - bb[0], y - bb[1]
     if tx["box"]:
+        pad = int(fs * float(tx.get("box_pad", 30)) / 100)
         bc = _hex(tx["box_color"], "000000") + (int(float(tx["box_opacity"]) * 2.55),)
-        d.rectangle((x - pad, y - pad, x + tw + pad, y + th + pad), fill=bc)
+        d.rectangle((x0 - pad, y0 - pad, x0 + bw + pad, y0 + bh + pad), fill=bc)
     if tx["shadow"]:
-        sd = max(1, int(3 * H / 1080))
-        d.multiline_text((ox + sd, oy + sd), text, font=font, fill=(0, 0, 0, 150), spacing=spacing, align="center")
-    col = _hex(tx["color"], "FFFFFF") + (int(float(tx["opacity"]) * 2.55),)
-    d.multiline_text((ox, oy), text, font=font, fill=col, spacing=spacing, align="center",
-                     stroke_width=sw, stroke_fill=(0, 0, 0, 255))
+        ang = math.radians(float(tx.get("shadow_angle", 45)))
+        dist = float(tx.get("shadow_dist", 3)) * sc
+        sx, sy = int(round(dist * math.cos(ang))), int(round(dist * math.sin(ang)))
+        scol = _hex(tx.get("shadow_color"), "000000") + (int(float(tx.get("shadow_opacity", 60)) * 2.55),)
+        for run, col, x, y in lay["runs"]:
+            d.text((x + sx, y + sy), run, font=font, fill=scol, stroke_width=ow + fb, stroke_fill=scol)
+    oc = _hex(tx["outline_color"], "000000") + (255,)
+    for run, col, x, y in lay["runs"]:
+        c = _hex(col, "FFFFFF") + (255,)
+        if ow:
+            d.text((x, y), run, font=font, fill=c, stroke_width=ow + fb, stroke_fill=oc)
+        if fb:
+            d.text((x, y), run, font=font, fill=c, stroke_width=fb, stroke_fill=c)
+        elif not ow:
+            d.text((x, y), run, font=font, fill=c)
+    if tx.get("underline"):
+        uh = max(2, int(round(fs * 0.06)))
+        c = _hex(tx["color"], "FFFFFF") + (255,)
+        for x, y, w_ in lay["ulines"]:
+            d.rectangle((x, y, x + w_, y + uh), fill=c)
+    if alpha < 255:
+        a = layer.getchannel("A").point(lambda v: v * alpha // 255)
+        layer.putalpha(a)
     canvas.alpha_composite(layer)
+
+
+def geometry_img(img, s):
+    """Rotate, flip and free crop of the imported movie (same as the export)."""
+    rot = str(s.get("rotate", "No rotation"))
+    if rot.startswith("90° right"):
+        img = img.transpose(Image.ROTATE_270)
+    elif rot.startswith("90° left"):
+        img = img.transpose(Image.ROTATE_90)
+    elif rot.startswith("180"):
+        img = img.transpose(Image.ROTATE_180)
+    if s.get("flip_h"):
+        img = img.transpose(Image.FLIP_LEFT_RIGHT)
+    if s.get("flip_v"):
+        img = img.transpose(Image.FLIP_TOP_BOTTOM)
+    x, y, w, h = E.free_crop_box(s, img.width, img.height)
+    if (w, h) != img.size:
+        img = img.crop((x, y, x + w, y + h))
+    return img
+
+
+def effects_img(img, s):
+    if s.get("fx_bw") or s.get("fx_sepia"):
+        g = img.convert("L")
+        if s.get("fx_sepia"):
+            img = Image.merge("RGB", (g.point(lambda v: min(255, int(v * 1.07 + 20))), g.point(lambda v: int(v * 0.95 + 8)),
+                                      g.point(lambda v: int(v * 0.75))))
+        else:
+            img = g.convert("RGB")
+    b = float(s.get("fx_blur", 0) or 0)
+    if b > 0:
+        img = img.filter(ImageFilter.GaussianBlur(b * 0.4 * img.width / 1280))
+    return img
 
 
 def compose(movie, t, s, info, short=SHORT):
@@ -251,10 +300,10 @@ def compose(movie, t, s, info, short=SHORT):
     s = E.sanitize(s)
     dur = info["duration"]
     t = min(max(0.0, t), max(0.0, dur - 0.05))
-    src = frame_at(movie, t, 960)
+    src = geometry_img(frame_at(movie, t, 960), s)
     if s["chroma_on"]:
         src = chroma_comp(src, background(s, src.size, t), s)
-    src = apply_color(src, s)
+    src = effects_img(apply_color(src, s), s)
     src = source_crop_img(src, s)
     W, H = out_size(s, *src.size, short=short)
     canvas = CL.apply_finish(fit(src, W, H, s), s).convert("RGBA")

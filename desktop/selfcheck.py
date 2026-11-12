@@ -420,6 +420,58 @@ def t_capcut_text():
             f"italic {os.path.basename(ital[0] or '-')}, Hindi bold {os.path.basename(hindi_b[0] or '-')}")
 
 
+def t_pro_edit_and_player():
+    """Rotate / flip / free crop / speed / fades / effects export, and the live player plays in the window."""
+    import time
+    import app as A
+    import studio as S
+    import engine as E
+    cpu = [c for c in E.CODECS if "CPU" in c][0]
+    s = E.sanitize({"resolution": "480p", "codec": cpu, "rate_mode": E.RATE_MODES[0], "bitrate": 2000, "aspect": "9:16",
+                    "rotate": "90° right", "flip_h": True, "crop_l": 10, "crop_t": 5, "speed": 2.0, "vfade_in": 0.5,
+                    "vfade_out": 0.5, "fx_sepia": True, "fx_blur": 2, "fx_denoise": True, "fx_stab": True})
+    out = os.path.join(tmp, "pro.mp4")
+    info = E.probe_info(movie)
+    cmd, tmpf = E.build_command(movie, 0.0, 8.0, out, s, info, None)
+    r = subprocess.run(cmd, capture_output=True, creationflags=E.NOWIN)
+    assert r.returncode == 0, r.stderr.decode(errors="ignore")[-600:]
+    d = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", out],
+                             capture_output=True, text=True, creationflags=E.NOWIN).stdout.strip())
+    assert abs(d - 4.0) < 0.3, f"8 s at 2x speed should be 4 s, got {d}"
+    w = A.App()
+    w.update()
+
+    def walk(x):
+        yield x
+        for c in x.winfo_children():
+            yield from walk(c)
+    st = [x for x in walk(w) if isinstance(x, S.Studio) and x.mode == "simple"][0]
+    errors = []
+    S.messagebox.showerror = lambda *a, **k: errors.append(a)
+    S.messagebox.showwarning = lambda *a, **k: errors.append(a)
+    st.load_movie(movie)
+    st.parts = [{"on": True, "sil": True, "ov": True, "start": 0.0, "end": 10.0, "label": ""}]
+    st.cfg.update(rotate="90° left", fx_bw=True, speed=1.5)
+    st.items = [dict(E.TEXT_DEFAULT, kind="text", text="Play test", anim_in="Pop", rel_start=0.0, rel_end=0.0, uid="p1")]
+    st.select_part(0)
+    w.update()
+    st.frames_shown = 0
+    st.toggle_play()
+    t0 = time.time()
+    while time.time() - t0 < 5:
+        w.update()
+        time.sleep(0.01)
+    shown, pos = st.frames_shown, st.t_rel
+    st.toggle_play()                                          # pause
+    w.update()
+    assert not errors, errors
+    assert shown >= 20, f"only {shown} frames were shown in 5 s"
+    assert pos > 1.0, f"the position did not move ({pos})"
+    assert not st.playing
+    w.destroy()
+    return f"pro export 8 s -> {d:.1f}s at 2x; live player showed {shown} frames, reached {pos:.1f}s in 5 s"
+
+
 def t_many_pieces():
     import engine as E
     cpu = [c for c in E.CODECS if "CPU" in c][0]
@@ -512,6 +564,7 @@ step("Simple Edit: clean start + overlay only on ticked videos", t_clean_start_a
 step("Simple Edit: stop + continue, text per video", t_resume_and_text_per_video)
 step("word colour, clean end, auto short ends", t_word_colour_and_clean_end)
 step("CapCut text options (styles, effects, animations)", t_capcut_text)
+step("pro edit (rotate, crop, speed, effects) + live player", t_pro_edit_and_player)
 step("silence cut, one part at a time (AI Clipping)", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)
 step("400 pieces in one clip (long filter graph)", t_many_pieces)
