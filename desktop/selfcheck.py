@@ -370,6 +370,9 @@ def t_capcut_text():
     bold = E.styled_font("Arial", True, False)
     ital = E.styled_font("Arial", False, True)
     hindi_b = E.styled_font("Nirmala UI", True, False)
+    hindi_names = [n for n in E.get_system_fonts() if n.lower().startswith("nirmala")]
+    assert "nirmala" in os.path.basename(E.resolve_font("Nirmala UI") or "").lower(), (E.resolve_font("Nirmala UI"), hindi_names)
+    assert "nirmala" in os.path.basename(hindi_b[0] or "").lower(), (hindi_b, hindi_names)
     w = A.App()
     w.update()
 

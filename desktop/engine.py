@@ -263,6 +263,11 @@ def resolve_font(name):
     for n, p in fonts.items():
         if n.lower() == str(name).lower():
             return p
+    low = str(name).lower()
+    for n, p in fonts.items():                 # 'Nirmala UI' -> 'Nirmala UI & Nirmala UI Semilight' (one .ttc)
+        nl = n.lower()
+        if nl.startswith(low + " &") or nl.startswith(low + " regular") or nl.split(" & ")[0] == low:
+            return p
     for cand in ("arial", "Arial", "DejaVuSans"):
         if cand in fonts:
             return fonts[cand]
@@ -293,7 +298,8 @@ def styled_font(name, bold=False, italic=False):
     low = {k.lower(): v for k, v in fonts.items()}
     stem = os.path.splitext(os.path.basename(base or ""))[0].lower()
     want = ("Bold Italic" if bold and italic else "Bold" if bold else "Italic")
-    cands = [f"{name} {want}", f"{name} {want.replace('Italic', 'Oblique')}",
+    fam = str(name).split(" & ")[0].strip()
+    cands = [f"{fam} {want}", f"{fam} {want.replace('Italic', 'Oblique')}", f"{name} {want}", f"{name} {want.replace('Italic', 'Oblique')}",
              f"{name}-{want.replace(' ', '')}", f"{name}-{want.replace(' ', '').replace('Italic', 'Oblique')}",
              stem + {"Bold": "bd", "Italic": "i", "Bold Italic": "bi"}[want],
              stem + {"Bold": "b", "Italic": "i", "Bold Italic": "z"}[want],
