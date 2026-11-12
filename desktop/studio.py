@@ -1104,7 +1104,82 @@ class Studio(ctk.CTkFrame):
         self.refresh_pv()
         self._pv_changed()
 
+    TEXT_STYLES = (
+        ("Classic", dict(color="#FFFFFF", outline=3, outline_color="#000000", bold=False, glow=False, box=False,
+                         shadow=False)),
+        ("Yellow bold", dict(color="#FFD400", outline=4, outline_color="#000000", bold=True, glow=False, box=False,
+                             shadow=True)),
+        ("Black box", dict(color="#FFFFFF", outline=0, box=True, box_color="#000000", box_opacity=75, box_pad=30,
+                           bold=True, glow=False, shadow=False)),
+        ("White box", dict(color="#000000", outline=0, box=True, box_color="#FFFFFF", box_opacity=100, box_pad=30,
+                           bold=True, glow=False, shadow=False)),
+        ("Red label", dict(color="#FFFFFF", outline=0, box=True, box_color="#E1251B", box_opacity=100, box_pad=35,
+                           bold=True, glow=False, shadow=False)),
+        ("Neon blue", dict(color="#FFFFFF", outline=0, glow=True, glow_color="#00E5FF", glow_size=9, box=False,
+                           bold=True, shadow=False)),
+        ("Neon pink", dict(color="#FFFFFF", outline=0, glow=True, glow_color="#FF2BD6", glow_size=9, box=False,
+                           bold=True, shadow=False)),
+        ("Gaming green", dict(color="#39FF14", outline=3, outline_color="#000000", glow=True, glow_color="#39FF14",
+                              glow_size=6, bold=True, box=False, case="UPPERCASE")),
+        ("Subtitle", dict(color="#FFFFFF", outline=0, shadow=True, shadow_dist=3, shadow_opacity=80, box=False,
+                          glow=False, bold=False)),
+        ("Comic", dict(color="#FFFFFF", outline=6, outline_color="#000000", bold=True, shadow=True, shadow_dist=6,
+                       shadow_color="#E1251B", shadow_opacity=100, glow=False, box=False, case="UPPERCASE")),
+        ("Gold", dict(color="#FFC83D", outline=2, outline_color="#5A3A00", glow=True, glow_color="#FFB000",
+                      glow_size=5, bold=True, box=False, shadow=False)),
+        ("Clean black", dict(color="#111111", outline=3, outline_color="#FFFFFF", bold=True, box=False, glow=False,
+                             shadow=False)),
+    )
+
+    def _choice(self, box, label, values, it, key):
+        row = ctk.CTkFrame(box, fg_color="transparent")
+        row.pack(fill="x", padx=8, pady=2)
+        ctk.CTkLabel(row, text=label, text_color=TEXT, width=118, anchor="w").pack(side="left")
+        var = tk.StringVar(value=str(it.get(key, values[0])))
+        ctk.CTkOptionMenu(row, values=list(values), variable=var, width=170,
+                          command=lambda v: self._set_key(it, key, v)).pack(side="left")
+        return var
+
+    def _section(self, box, title):
+        ctk.CTkLabel(box, text=title, font=ctk.CTkFont(size=12, weight="bold"), text_color=NEON, anchor="w").pack(
+            fill="x", padx=8, pady=(10, 2))
+
+    def _apply_style(self, it, st):
+        it.update(copy.deepcopy(st))
+        self._changed()
+        self._refresh_list_labels()
+        if self.sel is not None:
+            self.select(self.sel)                    # rebuild the editor with the new values
+
+    STYLE_KEYS = ("font", "size", "color", "opacity", "outline", "outline_color", "shadow", "box", "box_color",
+                  "box_opacity", "bold", "italic", "underline", "case", "align", "line_spacing", "shadow_color",
+                  "shadow_opacity", "shadow_dist", "shadow_angle", "glow", "glow_color", "glow_size", "box_pad",
+                  "anim_in", "anim_in_dur", "anim_out", "anim_out_dur", "anim_loop")
+
+    def _style_to_all(self, it):
+        st = {k: copy.deepcopy(it[k]) for k in self.STYLE_KEYS if k in it}
+        n = 0
+        for other in self.items:
+            if other is not it and other.get("kind") == "text":
+                other.update(st)
+                n += 1
+        self._changed()
+        messagebox.showinfo("Text style", f"The style (font, colours, effects, animation) is copied to {n} other "
+                                          f"text(s). Words and positions are not changed.")
+
+    def _duplicate_text(self, it):
+        new = copy.deepcopy(it)
+        new["uid"] = uuid.uuid4().hex[:8]
+        new["pos"], new["x"], new["y"] = "Custom", min(90.0, float(it.get("x", 50)) + 3), min(95.0, float(it.get("y", 80)) - 6)
+        new["hcenter"] = new["vcenter"] = False
+        self.items.append(new)
+        self.select(len(self.items) - 1)
+        self._changed()
+        self._refresh_list_labels()
+
     def _build_text_editor(self, box, it):
+        for k, v in E.TEXT_DEFAULT.items():          # texts from older projects get the new options
+            it.setdefault(k, v)
         self.build_pv(box, it)
         ctk.CTkLabel(box, text="TEXT", font=ctk.CTkFont(size=12, weight="bold"), text_color=NEON).pack(
             anchor="w", padx=8, pady=(6, 2))
@@ -1117,6 +1192,22 @@ class Studio(ctk.CTkFrame):
             self._changed()
             self._refresh_list_labels()
         tb.bind("<KeyRelease>", typed)
+        self._section(box, "STYLES (one click)")
+        grid = ctk.CTkFrame(box, fg_color="transparent")
+        grid.pack(fill="x", padx=8, pady=2)
+        for i, (name, st) in enumerate(self.TEXT_STYLES):
+            fg = st.get("box_color") if st.get("box") else "#2A2A2A"
+            ctk.CTkButton(grid, text=name, width=108, height=30, fg_color=fg, hover_color=QUIET_H,
+                          text_color=st.get("color", "#FFFFFF"), border_width=2,
+                          border_color=st.get("glow_color") if st.get("glow") else st.get("outline_color", "#000000"),
+                          font=ctk.CTkFont(size=12, weight="bold" if st.get("bold") else "normal"),
+                          command=lambda st=st: self._apply_style(it, st)).grid(row=i // 3, column=i % 3, padx=2, pady=2)
+        brow = ctk.CTkFrame(box, fg_color="transparent")
+        brow.pack(fill="x", padx=8, pady=(4, 0))
+        ctk.CTkButton(brow, text="Duplicate text", width=120, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
+                      command=lambda: self._duplicate_text(it)).pack(side="left")
+        ctk.CTkButton(brow, text="Copy this style to all texts", width=190, fg_color=QUIET, hover_color=QUIET_H,
+                      text_color=TEXT, command=lambda: self._style_to_all(it)).pack(side="left", padx=6)
 
         def make_number():
             inner = getattr(tb, "_textbox", tb)
@@ -1186,6 +1277,17 @@ class Studio(ctk.CTkFrame):
         fvar = tk.StringVar(value=str(it["font"]))
         fvar.trace_add("write", lambda *a: self._set_key(it, "font", fvar.get()))
         FontPicker(box, fvar).pack(fill="x", padx=8, pady=2)
+        biu = ctk.CTkFrame(box, fg_color="transparent")
+        biu.pack(fill="x", padx=8, pady=2)
+        for key, label in (("bold", "Bold"), ("italic", "Italic"), ("underline", "Underline")):
+            v = tk.BooleanVar(value=bool(it[key]))
+            ctk.CTkCheckBox(biu, text=label, variable=v, width=90, text_color=TEXT,
+                            command=lambda k=key, v=v: self._flag(it, k, v)).pack(side="left")
+        self._choice(box, "Letters", E.TEXT_CASES, it, "case")
+        self._choice(box, "Line alignment", E.TEXT_ALIGNS, it, "align")
+        ctk.CTkLabel(box, text="Bold / Italic use the font's own Bold / Italic file when the computer has it (Arial, "
+                               "Nirmala UI ...); otherwise Bold is drawn thicker and Italic stays straight.",
+                     text_color=GREY, wraplength=340, justify="left", anchor="w").pack(anchor="w", padx=8, pady=(0, 2))
         self._preset_row(box, it)
         crow = ctk.CTkFrame(box, fg_color="transparent")
         crow.pack(fill="x", padx=8, pady=(2, 0))
@@ -1216,20 +1318,57 @@ class Studio(ctk.CTkFrame):
         self._num(box, "Up-down Y %", 0, 100, 0.5, it, "y", "{:.1f}", custom=True)
         self._num(box, "Size (% of height)", 1, 20, 0.5, it, "size", "{:.1f}")
         self._num(box, "Opacity %", 5, 100, 1, it, "opacity", "{:.0f}")
-        self._num(box, "Outline thickness", 0, 10, 1, it, "outline", "{:.0f}")
+        self._num(box, "Line spacing %", -30, 150, 5, it, "line_spacing", "{:.0f}")
         self._timing(box, it)
         row = ctk.CTkFrame(box, fg_color="transparent")
         row.pack(fill="x", padx=8, pady=3)
         self._colour_btn(row, "Text colour", it, "color")
+
+        self._section(box, "OUTLINE (STROKE)")
+        self._num(box, "Outline thickness", 0, 15, 1, it, "outline", "{:.0f}")
+        row = ctk.CTkFrame(box, fg_color="transparent")
+        row.pack(fill="x", padx=8, pady=3)
         self._colour_btn(row, "Outline colour", it, "outline_color")
+
+        self._section(box, "SHADOW")
         var = tk.BooleanVar(value=bool(it["shadow"]))
         ctk.CTkCheckBox(box, text="Shadow", variable=var, text_color=TEXT,
                         command=lambda: self._flag(it, "shadow", var)).pack(anchor="w", padx=8, pady=3)
+        row = ctk.CTkFrame(box, fg_color="transparent")
+        row.pack(fill="x", padx=8, pady=3)
+        self._colour_btn(row, "Shadow colour", it, "shadow_color")
+        self._num(box, "Shadow opacity %", 0, 100, 1, it, "shadow_opacity", "{:.0f}")
+        self._num(box, "Shadow distance", 0, 30, 1, it, "shadow_dist", "{:.0f}")
+        self._num(box, "Shadow angle (deg)", 0, 360, 5, it, "shadow_angle", "{:.0f}")
+
+        self._section(box, "GLOW")
+        vg = tk.BooleanVar(value=bool(it["glow"]))
+        ctk.CTkCheckBox(box, text="Glow around the letters", variable=vg, text_color=TEXT,
+                        command=lambda: self._flag(it, "glow", vg)).pack(anchor="w", padx=8, pady=3)
+        row = ctk.CTkFrame(box, fg_color="transparent")
+        row.pack(fill="x", padx=8, pady=3)
+        self._colour_btn(row, "Glow colour", it, "glow_color")
+        self._num(box, "Glow size", 1, 30, 1, it, "glow_size", "{:.0f}")
+
+        self._section(box, "BACKGROUND")
         var2 = tk.BooleanVar(value=bool(it["box"]))
         ctk.CTkCheckBox(box, text="Background box behind text", variable=var2, text_color=TEXT,
                         command=lambda: self._flag(it, "box", var2)).pack(anchor="w", padx=8, pady=3)
         self._colour_btn(box, "Box colour", it, "box_color")
         self._num(box, "Box opacity %", 0, 100, 1, it, "box_opacity", "{:.0f}")
+        self._num(box, "Box padding %", 0, 100, 5, it, "box_pad", "{:.0f}")
+
+        self._section(box, "ANIMATION")
+        self._choice(box, "In", E.ANIM_IN, it, "anim_in")
+        self._num(box, "In duration (s)", 0.1, 3, 0.1, it, "anim_in_dur", "{:.1f}")
+        self._choice(box, "Out", E.ANIM_OUT, it, "anim_out")
+        self._num(box, "Out duration (s)", 0.1, 3, 0.1, it, "anim_out_dur", "{:.1f}")
+        self._choice(box, "Loop", E.ANIM_LOOP, it, "anim_loop")
+        ctk.CTkLabel(box, text="In: how the text comes in; Out: how it goes; Loop: moves the whole time it is on "
+                               "screen. Typewriter shows the words one by one. Move the preview to the start of the "
+                               "text to see the animation. (Coloured words / underline: Pop and Pulse are not used, "
+                               "the size stays the same.)",
+                     text_color=GREY, wraplength=340, justify="left", anchor="w").pack(anchor="w", padx=8, pady=(2, 4))
         ctk.CTkButton(box, text="Delete this text", fg_color=DANGER, hover_color=DANGER_H, text_color=TEXT,
                       command=self.remove_selected).pack(anchor="w", padx=8, pady=(10, 6))
 

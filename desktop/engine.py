@@ -49,7 +49,17 @@ TEXT_DEFAULT = dict(text="Your text", font="Arial", size=6.0, color="#FFFFFF", o
                     start=0.0, end=0.0)
 
 OVERLAY_DEFAULT = {**OVERLAY_DEFAULT, "layer": 1, "src_offset": 0.0, "key_color": "#00FF00", "key_sim": 0.30, "key_blend": 0.10, "key_spill": True}
-TEXT_DEFAULT = {**TEXT_DEFAULT, "layer": 1, "hcenter": False, "vcenter": False}
+TEXT_DEFAULT = {**TEXT_DEFAULT, "layer": 1, "hcenter": False, "vcenter": False,
+                # CapCut-style text options
+                "bold": False, "italic": False, "underline": False, "case": "As typed", "align": "Center",
+                "line_spacing": 0.0, "shadow_color": "#000000", "shadow_opacity": 60, "shadow_dist": 3.0,
+                "shadow_angle": 45.0, "glow": False, "glow_color": "#00E5FF", "glow_size": 8.0, "box_pad": 30.0,
+                "anim_in": "None", "anim_in_dur": 0.5, "anim_out": "None", "anim_out_dur": 0.5, "anim_loop": "None"}
+TEXT_CASES = ("As typed", "UPPERCASE", "lowercase", "Title Case")
+TEXT_ALIGNS = ("Left", "Center", "Right")
+ANIM_IN = ("None", "Fade", "Slide up", "Slide down", "Slide left", "Slide right", "Pop", "Typewriter")
+ANIM_OUT = ("None", "Fade", "Slide up", "Slide down", "Slide left", "Slide right", "Pop")
+ANIM_LOOP = ("None", "Pulse", "Bounce", "Shake", "Blink")
 AUDIO_DEFAULT = dict(path="", layer=1, start=0.0, end=0.0, src_offset=0.0, volume=100, loop=True)
 
 DEFAULTS = dict(
@@ -260,7 +270,41 @@ def resolve_font(name):
 
 
 # ---------------------------------------------------------------- coloured words inside a text
-COLOR_TAG = re.compile(r"\{c=#?([0-9A-Fa-f]{6})\}(.*?)\{/c\}", re.S)
+COLOR_TAG = re.compile(r"\{c=#?([0-9A-Fa-f]{6})\}(.*?)\{/c\}", re.S | re.I)
+
+
+def apply_case(text, case):
+    """UPPERCASE / lowercase / Title Case of the words (colour marks stay usable: the tag pattern ignores case)."""
+    if case == "UPPERCASE":
+        return text.upper()
+    if case == "lowercase":
+        return text.lower()
+    if case == "Title Case":
+        return re.sub(r"(^|[\s\}])(\w)", lambda m: m.group(1) + m.group(2).upper(), text)
+    return text
+
+
+def styled_font(name, bold=False, italic=False):
+    """(font file, fake_bold, italic_missing): the Bold / Italic file of a font family when the computer has it."""
+    base = resolve_font(name)
+    if not (bold or italic):
+        return base, False, False
+    fonts = get_system_fonts()
+    low = {k.lower(): v for k, v in fonts.items()}
+    stem = os.path.splitext(os.path.basename(base or ""))[0].lower()
+    want = ("Bold Italic" if bold and italic else "Bold" if bold else "Italic")
+    cands = [f"{name} {want}", f"{name} {want.replace('Italic', 'Oblique')}",
+             f"{name}-{want.replace(' ', '')}", f"{name}-{want.replace(' ', '').replace('Italic', 'Oblique')}",
+             stem + {"Bold": "bd", "Italic": "i", "Bold Italic": "bi"}[want],
+             stem + {"Bold": "b", "Italic": "i", "Bold Italic": "z"}[want],
+             f"{stem}-{want.replace(' ', '').lower()}"]
+    for c in cands:
+        if c.lower() in low:
+            return low[c.lower()], False, False
+    if bold and italic:                                       # at least one of the two
+        p, fb, _ = styled_font(name, True, False)
+        return p, fb, True
+    return base, bool(bold), bool(italic)
 
 
 def strip_colors(text):
@@ -288,14 +332,15 @@ def color_lines(text, base):
     return lines
 
 
-def color_text_layout(t, OW, OH):
-    """Where every coloured run of a text goes: [(run, colour, x, y)], plus font file and size. Widths are measured
-    with the same font file, so the words sit next to each other like one text. None = cannot (no font file)."""
+def color_text_layout(t, OW, OH, ff=None, text=None):
+    """Where every coloured run of a text goes: [(run, colour, x, y)], plus font file, size and the lines (for
+    underline). Widths are measured with the same font file, so the words sit next to each other like one text.
+    None = cannot (no font file)."""
     try:
         from PIL import ImageFont
     except ImportError:
         return None
-    ff = resolve_font(t["font"])
+    ff = ff or resolve_font(t["font"])
     if not ff:
         return None
     fs = max(8, int(OH * float(t["size"]) / 100))
@@ -303,9 +348,9 @@ def color_text_layout(t, OW, OH):
         font = ImageFont.truetype(ff, fs)
     except Exception:
         return None
-    lines = color_lines(str(t["text"]).strip("\n"), t["color"])
+    lines = color_lines(str(t["text"] if text is None else text).strip("\n"), t["color"])
     asc, desc = font.getmetrics()
-    line_h = asc + desc
+    line_h = asc + desc + int(fs * float(t.get("line_spacing", 0) or 0) / 100)
     plain = ["".join(r for r, _ in ln) for ln in lines]
     widths = [font.getlength(p) for p in plain]
     bw, bh = max(widths or [0]), line_h * len(lines)
@@ -322,17 +367,22 @@ def color_text_layout(t, OW, OH):
         x0 = (OW - bw) / 2
     if t.get("vcenter"):
         y0 = (OH - bh) / 2
-    out = []
+    out, ulines = [], []
+    align = t.get("align", "Center")
     for li, ln in enumerate(lines):
         k = 0
+        lx = x0 + {"Left": 0.0, "Right": bw - widths[li]}.get(align, (bw - widths[li]) / 2)
+        ly = y0 + li * line_h
+        if widths[li] > 0:
+            ulines.append((int(round(lx)), int(round(ly + asc + fs * 0.08)), int(round(widths[li]))))
         for run, col in ln:
             lead = len(run) - len(run.lstrip(" "))
             body = run.strip(" ")
             if body:
-                x = x0 + font.getlength(plain[li][:k + lead])
-                out.append((body, col, int(round(x)), int(round(y0 + li * line_h))))
+                x = lx + font.getlength(plain[li][:k + lead])
+                out.append((body, col, int(round(x)), int(round(ly))))
             k += len(run)
-    return dict(runs=out, font=ff, size=fs)
+    return dict(runs=out, font=ff, size=fs, ulines=ulines, block=(x0, y0, bw, bh))
 
 
 # ---------------------------------------------------------------- ffmpeg helpers
@@ -609,6 +659,178 @@ def filter_complex_args(graph, tmp):
     return ["-/filter_complex", path] if _FF_NEW_SYNTAX else ["-filter_complex_script", path]
 
 
+def _tf(tmp, text):
+    fd, tp = tempfile.mkstemp(suffix=".txt", prefix="vc_")
+    os.write(fd, text.encode("utf-8"))
+    os.close(fd)
+    tmp.append(tp)
+    return tp
+
+
+def text_filters(t, OW, OH, tst, ten, tmp):
+    """All filters (drawtext / drawbox) for one text item: style, bold / italic, glow, shadow, box, underline,
+    alignment, line spacing, coloured words and the In / Out / Loop animations."""
+    t = {**TEXT_DEFAULT, **t}
+    text = apply_case(str(t["text"]).strip("\n"), t["case"])
+    if not strip_colors(text).strip():
+        return []
+    fs = max(8, int(OH * float(t["size"]) / 100))
+    sc = OH / 1080.0
+    ff, fake_bold, _ = styled_font(t["font"], bool(t["bold"]), bool(t["italic"]))
+    alpha0 = max(0, min(100, float(t["opacity"]))) / 100
+    span = max(0.1, ten - tst)
+    a_in, a_out, loop = str(t["anim_in"]), str(t["anim_out"]), str(t["anim_loop"])
+    din = min(max(0.05, float(t["anim_in_dur"])), span / 2) if a_in != "None" else 0.0
+    dout = min(max(0.05, float(t["anim_out_dur"])), span / 2) if a_out != "None" else 0.0
+    layout_needed = bool(COLOR_TAG.search(text)) or bool(t["underline"])
+    lay = color_text_layout(t, OW, OH, ff, text) if layout_needed else None
+    if lay is None:
+        text = strip_colors(text)
+    pin = f"clip((t-{tst:.3f})/{din:.3f},0,1)" if din else "1"
+    pout = f"clip(({ten:.3f}-t)/{dout:.3f},0,1)" if dout else "1"
+    e_in, e_out = f"(1-pow(1-{pin},2))", f"(1-pow(1-{pout},2))"
+    lt = f"(t-{tst:.3f})"
+    alpha = [f"{alpha0:.3f}"]
+    scale, dx, dy = [], [], []
+    distx, disty = 0.12 * OW, 0.08 * OH
+    if a_in != "None" and a_in != "Typewriter":
+        alpha.append(pin)                       # every 'In' animation also fades in
+    if a_in == "Pop":
+        scale.append(f"(0.3+0.7*{e_in}+0.15*sin(PI*{pin}))")
+    for name, sgn in (("Slide up", (0, 1)), ("Slide down", (0, -1)), ("Slide left", (1, 0)), ("Slide right", (-1, 0))):
+        if a_in == name:
+            if sgn[0]:
+                dx.append(f"{sgn[0] * distx:.1f}*(1-{e_in})")
+            else:
+                dy.append(f"{sgn[1] * disty:.1f}*(1-{e_in})")
+        if a_out == name:
+            if sgn[0]:
+                dx.append(f"{-sgn[0] * distx:.1f}*(1-{e_out})")
+            else:
+                dy.append(f"{-sgn[1] * disty:.1f}*(1-{e_out})")
+    if a_out != "None":
+        alpha.append(pout)
+    if a_out == "Pop":
+        scale.append(f"(0.2+0.8*{e_out})")
+    if loop == "Pulse":
+        scale.append(f"(1+0.07*sin(2*PI*{lt}/0.9))")
+    elif loop == "Bounce":
+        dy.append(f"-{0.018 * OH:.1f}*abs(sin(2*PI*{lt}/1.4))")
+    elif loop == "Shake":
+        dx.append(f"{max(2.0, 4 * sc):.1f}*sin(2*PI*{lt}*9)")
+    elif loop == "Blink":
+        alpha.append(f"(0.6+0.4*cos(2*PI*{lt}/0.8))")
+    if lay is not None:
+        scale = []                              # measured word positions: the size must stay the same
+    a_expr = "*".join(alpha)
+    dx_e = "+".join(dx) or "0"
+    dy_e = "+".join(dy) or "0"
+    fs_e = f"{fs}*" + "*".join(scale) if scale else str(fs)
+
+    # style pieces
+    ow = max(1, int(round(float(t["outline"]) * sc))) if float(t["outline"]) > 0 else 0
+    fb = max(1, int(round(fs * 0.035))) if fake_bold else 0
+    shadow = []
+    if t["shadow"]:
+        ang = math.radians(float(t["shadow_angle"]))
+        dist = float(t["shadow_dist"]) * sc
+        shadow = [f"shadowx={int(round(dist * math.cos(ang)))}", f"shadowy={int(round(dist * math.sin(ang)))}",
+                  f"shadowcolor={hex0x(t['shadow_color'], '000000')}@{max(0, min(100, float(t['shadow_opacity'])))/100:.2f}"]
+    box = []
+    if t["box"]:
+        box = ["box=1", f"boxcolor={hex0x(t['box_color'], '000000')}@{max(0, min(100, float(t['box_opacity'])))/100:.2f}",
+               f"boxborderw={max(0, int(fs * float(t['box_pad']) / 100))}"]
+    common = [f"fontsize='{fs_e}'", f"alpha='{a_expr}'"]
+    if lay is None:
+        common += [f"line_spacing={int(fs * float(t['line_spacing']) / 100)}",
+                   f"text_align={ {'Left': 'L', 'Right': 'R'}.get(t['align'], 'C') }"]
+    font_part = [f"fontfile={fe(ff)}"] if ff else []
+
+    def layers(tp, col, x, y, enable):
+        """glow under, outline / bold, then the text itself."""
+        out = []
+        tail = [f"x='{x}'", f"y='{y}'", f"enable='{enable}'"] + (["y_align=font"] if lay is not None else [])
+        base = font_part + [f"textfile={fe(tp)}"] + common
+        if t["glow"]:
+            g = hex0x(t["glow_color"], "00E5FF")
+            for w_, a_ in ((float(t["glow_size"]) * sc * 1.6, 0.16), (float(t["glow_size"]) * sc * 0.8, 0.32)):
+                w_ = max(1, int(round(w_)))
+                out.append("drawtext=" + ":".join(base + [f"fontcolor={g}@{a_}", f"borderw={w_ + ow + fb}",
+                                                           f"bordercolor={g}@{a_}"] + tail))
+        if fb and ow:                             # fake bold + outline: outline layer first, thick text on top
+            out.append("drawtext=" + ":".join(base + [f"fontcolor={hex0x(t['outline_color'], '000000')}",
+                                                       f"borderw={ow + fb}",
+                                                       f"bordercolor={hex0x(t['outline_color'], '000000')}"]
+                                               + shadow + box + tail))
+            out.append("drawtext=" + ":".join(base + [f"fontcolor={hex0x(col)}", f"borderw={fb}",
+                                                       f"bordercolor={hex0x(col)}"] + tail))
+            return out
+        main = base + [f"fontcolor={hex0x(col)}"]
+        if fb:
+            main += [f"borderw={fb}", f"bordercolor={hex0x(col)}"]
+        elif ow:
+            main += [f"borderw={ow}", f"bordercolor={hex0x(t['outline_color'], '000000')}"]
+        out.append("drawtext=" + ":".join(main + shadow + box + tail))
+        return out
+
+    whole = f"between(t,{tst:.3f},{ten:.3f})"
+    res = []
+    if lay is not None:                           # measured layout: coloured words / underline
+        for run, col, x, y in lay["runs"]:
+            res += layers(_tf(tmp, run), col, f"{x}+{dx_e}", f"{y}+{dy_e}", whole)
+        if t["underline"]:
+            uh = max(2, int(round(fs * 0.06)))
+            moving = dx or dy
+            en = f"between(t,{tst + din:.3f},{ten - dout:.3f})" if moving else whole
+            for x, y, w_ in lay["ulines"]:
+                res.append(f"drawbox=x={x}:y={y}:w={w_}:h={uh}:color={hex0x(t['color'])}@{alpha0:.2f}:t=fill"
+                           f":enable='{en}'")
+        return res
+
+    mx, my = int(OW * 0.04), int(OH * 0.05)
+    px = {"Left": str(mx), "Center": "(w-text_w)/2", "Right": f"w-text_w-{mx}"}
+    py = {"Top": str(my), "Middle": "(h-text_h)/2", "Bottom": f"h-text_h-{my}"}
+    if t["pos"] == "Custom":
+        xe, ye = f"w*{float(t['x'])/100:.4f}", f"h*{float(t['y'])/100:.4f}"
+    elif t["pos"] == "Center":
+        xe, ye = px["Center"], py["Middle"]
+    else:
+        vert, horz = t["pos"].split("-")
+        xe, ye = px[horz], py[vert]
+    if t.get("hcenter"):
+        xe = px["Center"]
+    if t.get("vcenter"):
+        ye = py["Middle"]
+    if a_in == "Typewriter" and din:
+        # word by word (works for Hindi too: a word is never split); the words stay where the full text will be
+        toks = re.split(r"(\s+)", text)
+        words = [i for i, tk in enumerate(toks) if tk.strip()]
+        n = len(words)
+        if n > 1:
+            groups = max(1, math.ceil(n / 40))
+            steps = list(range(groups, n, groups))
+            step = din / (len(steps) + 1)
+            full = color_text_layout(dict(t, text=text), OW, OH, ff, text)
+            fx = f"{full['block'][0]:.0f}" if full else xe
+            fy = f"{full['block'][1]:.0f}" if full else ye
+            for k, cnt in enumerate(steps):
+                pre = "".join(toks[:words[cnt - 1] + 1])
+                en = f"between(t,{tst + k * step:.3f},{tst + (k + 1) * step:.3f})"
+                res += [f.replace("text_align=C", "text_align=L").replace("text_align=R", "text_align=L")
+                        for f in layers(_tf(tmp, pre), t["color"], f"{fx}+{dx_e}", f"{fy}+{dy_e}", en)]
+            if full:
+                res = [f + ":y_align=font" for f in res]
+            last = tst + len(steps) * step
+            res += [f.replace("text_align=C", "text_align=L").replace("text_align=R", "text_align=L")
+                    if full else f
+                    for f in layers(_tf(tmp, text), t["color"], f"{fx}+{dx_e}", f"{fy}+{dy_e}",
+                                    f"between(t,{last:.3f},{ten:.3f})")]
+            if full:
+                res = [f if f.endswith("y_align=font") else f + ":y_align=font" for f in res]
+            return res
+    return layers(_tf(tmp, text), t["color"], f"{xe}+{dx_e}", f"{ye}+{dy_e}", whole)
+
+
 def build_command(movie, start, dur, out, s, info, crop=None, codec=None, preview_t=None, pieces=None):
     """One ffmpeg command for the clip [start, start+dur]. Timeline items are movie-absolute and are
     shifted to clip time here. Order: auto-crop > colour > chroma > aspect/crop > overlays > text > audio.
@@ -782,58 +1004,8 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
         if sp is None:
             continue
         tst, ten = sp
-        fs = max(8, int(OH * float(t["size"]) / 100))
-        sc = OH / 1080.0
-        style = []
-        if float(t["outline"]) > 0:
-            style += [f"borderw={max(1, int(round(float(t['outline']) * sc)))}",
-                      f"bordercolor={hex0x(t['outline_color'], '000000')}"]
-        if t["shadow"]:
-            style += [f"shadowx={max(1, int(3*sc))}", f"shadowy={max(1, int(3*sc))}", "shadowcolor=0x000000@0.6"]
-        if t["box"]:
-            style += ["box=1", f"boxcolor={hex0x(t['box_color'], '000000')}@{max(0, min(100, float(t['box_opacity'])))/100:.2f}",
-                      f"boxborderw={int(fs*0.3)}"]
-        alpha = max(0, min(100, float(t["opacity"]))) / 100
-        if COLOR_TAG.search(str(t["text"])):
-            lay = color_text_layout(t, OW, OH)
-            if lay:                      # coloured words: every run of one colour is its own drawtext, side by side
-                for run, col, x, y in lay["runs"]:
-                    fd, tp = tempfile.mkstemp(suffix=".txt", prefix="vc_")
-                    os.write(fd, run.encode("utf-8"))
-                    os.close(fd)
-                    tmp.append(tp)
-                    add("drawtext=" + ":".join([f"fontfile={fe(lay['font'])}", f"textfile={fe(tp)}",
-                                                f"fontsize={lay['size']}", f"fontcolor={hex0x(col)}@{alpha:.2f}"]
-                                               + style + [f"x={x}", f"y={y}", "y_align=font",
-                                                          f"enable='between(t,{tst:.3f},{ten:.3f})'"]))
-                continue
-        fd, tp = tempfile.mkstemp(suffix=".txt", prefix="vc_")
-        os.write(fd, strip_colors(str(t["text"])).strip("\n").encode("utf-8"))
-        os.close(fd)
-        tmp.append(tp)
-        parts = []
-        ff = resolve_font(t["font"])
-        if ff:
-            parts.append(f"fontfile={fe(ff)}")
-        parts += [f"textfile={fe(tp)}", f"fontsize={fs}",
-                  f"fontcolor={hex0x(t['color'])}@{alpha:.2f}"]
-        parts += style
-        mx, my = int(OW * 0.04), int(OH * 0.05)
-        px = {"Left": str(mx), "Center": "(w-text_w)/2", "Right": f"w-text_w-{mx}"}
-        py = {"Top": str(my), "Middle": "(h-text_h)/2", "Bottom": f"h-text_h-{my}"}
-        if t["pos"] == "Custom":
-            xe, ye = f"w*{float(t['x'])/100:.4f}", f"h*{float(t['y'])/100:.4f}"
-        elif t["pos"] == "Center":
-            xe, ye = px["Center"], py["Middle"]
-        else:
-            vert, horz = t["pos"].split("-")
-            xe, ye = px[horz], py[vert]
-        if t.get("hcenter"):
-            xe = px["Center"]                       # one-click centring: exactly in the middle of the frame
-        if t.get("vcenter"):
-            ye = py["Middle"]
-        parts += [f"x={xe}", f"y={ye}", f"enable='between(t,{tst:.3f},{ten:.3f})'"]
-        add("drawtext=" + ":".join(parts))
+        for f in text_filters(t, OW, OH, tst, ten, tmp):
+            add(f)
 
     if boost.get("bar") and dur > 1.0:                 # thin progress bar along the top: viewers stay to see it fill
         bh = max(4, (OH // 200) // 2 * 2)

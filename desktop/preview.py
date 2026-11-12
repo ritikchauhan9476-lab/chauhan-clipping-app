@@ -331,9 +331,9 @@ def overlay_box(ov, W, H):
 def text_box(tx, W, H):
     """Top-left and ink size (px) of a text item, used for mouse handles."""
     tx = {**E.TEXT_DEFAULT, **tx}
-    text = E.strip_colors(str(tx["text"])).strip("\n") or " "
+    text = E.strip_colors(E.apply_case(str(tx["text"]), tx.get("case", "As typed"))).strip("\n") or " "
     fs = max(8, int(H * float(tx["size"]) / 100))
-    path = E.resolve_font(tx["font"])
+    path = E.styled_font(tx["font"], bool(tx.get("bold")), bool(tx.get("italic")))[0]
     try:
         font = ImageFont.truetype(path, fs) if path else ImageFont.load_default(size=fs)
     except Exception:
@@ -341,7 +341,8 @@ def text_box(tx, W, H):
     ow = float(tx["outline"])
     sw = max(1, int(round(ow * H / 1080))) if ow > 0 else 0
     d0 = ImageDraw.Draw(Image.new("RGB", (4, 4)))
-    bb = d0.multiline_textbbox((0, 0), text, font=font, spacing=int(fs * 0.15), align="center", stroke_width=sw)
+    bb = d0.multiline_textbbox((0, 0), text, font=font, spacing=int(fs * 0.15 + fs * float(tx.get("line_spacing", 0) or 0) / 100),
+                                 align={"Left": "left", "Right": "right"}.get(tx.get("align"), "center"), stroke_width=sw)
     tw, th = bb[2] - bb[0], bb[3] - bb[1]
     mx, my = int(W * 0.04), int(H * 0.05)
     if tx["pos"] == "Custom":

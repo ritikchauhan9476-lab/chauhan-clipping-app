@@ -362,6 +362,61 @@ def t_word_colour_and_clean_end():
             f"short ends at the biggest pause; Pillow text shaping (Hindi widths): {features.check('raqm')}")
 
 
+def t_capcut_text():
+    """Text options: the editor builds, every style applies, every animation / effect exports."""
+    import app as A
+    import studio as S
+    import engine as E
+    bold = E.styled_font("Arial", True, False)
+    ital = E.styled_font("Arial", False, True)
+    hindi_b = E.styled_font("Nirmala UI", True, False)
+    w = A.App()
+    w.update()
+
+    def walk(x):
+        yield x
+        for c in x.winfo_children():
+            yield from walk(c)
+    st = [x for x in walk(w) if isinstance(x, S.Studio) and x.mode == "simple"][0]
+    errors = []
+    S.messagebox.showerror = lambda *a, **k: errors.append(a)
+    S.messagebox.showwarning = lambda *a, **k: errors.append(a)
+    S.messagebox.showinfo = lambda *a, **k: None
+    st.load_movie(movie)
+    st.parts = [{"on": True, "sil": True, "ov": True, "start": 0.0, "end": 6.0, "label": ""}]
+    st.add_item("text")
+    w.update()
+    it = st.items[-1]
+    for name, style in S.Studio.TEXT_STYLES:
+        st._apply_style(it, style)
+        w.update()
+    st._duplicate_text(it)
+    st._style_to_all(it)
+    w.update()
+    assert not errors, errors
+    cpu = [c for c in E.CODECS if "CPU" in c][0]
+    s = E.sanitize({"resolution": "480p", "codec": cpu, "rate_mode": E.RATE_MODES[0], "bitrate": 2000, "aspect": "9:16"})
+    T = lambda **k: dict(E.TEXT_DEFAULT, kind="text", font="Arial", start=0.0, end=6.0, size=4.0, **k)
+    texts = []
+    for i, a_in in enumerate(E.ANIM_IN):
+        texts.append(T(text=f"in {a_in} words here", anim_in=a_in, anim_out=E.ANIM_OUT[i % len(E.ANIM_OUT)],
+                       anim_loop=E.ANIM_LOOP[i % len(E.ANIM_LOOP)], pos="Custom", x=5, y=5 + i * 8,
+                       bold=i % 2 == 0, italic=i % 3 == 0, underline=i == 3, glow=i == 4, box=i == 5, shadow=i == 6,
+                       case=E.TEXT_CASES[i % 4], align=E.TEXT_ALIGNS[i % 3]))
+    texts.append(T(text="Hindi {c=#FF0000}\u0928\u092e\u0938\u094d\u0924\u0947{/c} \u0926\u094b\u0938\u094d\u0924\u094b\u0902",
+                   font="Nirmala UI", bold=True, pos="Bottom-Center"))
+    s["texts"] = texts
+    out = os.path.join(tmp, "text_fx.mp4")
+    info = E.probe_info(movie)
+    cmd, tmpf = E.build_command(movie, 0.0, 4.0, out, s, info, None)
+    r = subprocess.run(cmd, capture_output=True, creationflags=E.NOWIN)
+    assert r.returncode == 0 and os.path.getsize(out) > 5000, r.stderr.decode(errors="ignore")[-800:]
+    w.destroy()
+    return (f"{len(S.Studio.TEXT_STYLES)} styles, {len(E.ANIM_IN)} in / {len(E.ANIM_OUT)} out / {len(E.ANIM_LOOP)} loop "
+            f"animations export OK; bold {os.path.basename(bold[0] or '-')}{' (drawn thicker)' if bold[1] else ''}, "
+            f"italic {os.path.basename(ital[0] or '-')}, Hindi bold {os.path.basename(hindi_b[0] or '-')}")
+
+
 def t_many_pieces():
     import engine as E
     cpu = [c for c in E.CODECS if "CPU" in c][0]
@@ -453,6 +508,7 @@ step("Simple Edit: export button, 2 parts", t_simple_export_in_window)
 step("Simple Edit: clean start + overlay only on ticked videos", t_clean_start_and_overlay_flags)
 step("Simple Edit: stop + continue, text per video", t_resume_and_text_per_video)
 step("word colour, clean end, auto short ends", t_word_colour_and_clean_end)
+step("CapCut text options (styles, effects, animations)", t_capcut_text)
 step("silence cut, one part at a time (AI Clipping)", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)
 step("400 pieces in one clip (long filter graph)", t_many_pieces)
