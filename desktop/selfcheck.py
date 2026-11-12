@@ -396,7 +396,7 @@ def t_capcut_text():
     assert not errors, errors
     cpu = [c for c in E.CODECS if "CPU" in c][0]
     s = E.sanitize({"resolution": "480p", "codec": cpu, "rate_mode": E.RATE_MODES[0], "bitrate": 2000, "aspect": "9:16"})
-    T = lambda **k: dict(E.TEXT_DEFAULT, kind="text", font="Arial", start=0.0, end=6.0, size=4.0, **k)
+    T = lambda **k: dict(dict(E.TEXT_DEFAULT, kind="text", font="Arial", start=0.0, end=6.0, size=4.0), **k)
     texts = []
     for i, a_in in enumerate(E.ANIM_IN):
         texts.append(T(text=f"in {a_in} words here", anim_in=a_in, anim_out=E.ANIM_OUT[i % len(E.ANIM_OUT)],
