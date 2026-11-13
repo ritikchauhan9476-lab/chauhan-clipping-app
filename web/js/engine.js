@@ -30,6 +30,7 @@ export const QUALITY = {
   "Fast (phone)": { crf: 22, x264: "veryfast" },
 };
 export const EXPORT_PRESETS = {
+  "CapCut max (1080p, 60 fps, 50 Mbps)": { resolution: "1080p", fps: "60", quality: "High", rate_mode: RATE_MODES[0], bitrate: 50000, audio_bitrate: "320k" },
   "Reels / Shorts - best quality (1080p, 12 Mbps)": { resolution: "1080p", fps: "Original", quality: "High", rate_mode: RATE_MODES[0], bitrate: 12000, audio_bitrate: "192k" },
   "YouTube 1080p (16 Mbps)": { resolution: "1080p", fps: "Original", quality: "High", rate_mode: RATE_MODES[0], bitrate: 16000, audio_bitrate: "192k" },
   "Small file for WhatsApp (720p, 3 Mbps)": { resolution: "720p", fps: "Original", quality: "Balanced", rate_mode: RATE_MODES[0], bitrate: 3000, audio_bitrate: "128k" },
@@ -56,7 +57,7 @@ export const DEFAULTS = {
   language: "hi", whisper_model: "base",
   part_len: 60, trim_start: 0, trim_end: 0, min_last: 5,
   brightness: 0, contrast: 1, saturation: 1, gamma: 1, sharpness: 0, hue: 0, warmth: 0, auto_crop: true,
-  src_aspect: "Original", aspect: "Original", fit_mode: "Blur background", resolution: "Original", fps: "Original",
+  src_aspect: "Original", aspect: "Original", fit_mode: "Blur background", resolution: "1080p", fps: "60",
   zoom: 1.0, crop_x: 50, crop_y: 50,
   bg_color: "#1E1E1E", blur_amount: 25, fit_scale: 100, fit_y: 50,
   ...CL.NEW_DEFAULTS,
@@ -64,7 +65,7 @@ export const DEFAULTS = {
   chroma_bg_type: "Color", chroma_bg_color: "#1E1E1E", chroma_bg_file: "",
   overlays: [], texts: [], audios: [],
   music_mode: "Mix with original audio", orig_volume: 100,
-  codec: CODECS[2], x264_preset: "veryfast", quality: "High", bitrate: 20000, audio_bitrate: "192k", rate_mode: RATE_MODES[0],
+  codec: CODECS[2], x264_preset: "veryfast", quality: "High", bitrate: 50000, audio_bitrate: "320k", rate_mode: RATE_MODES[0],
   fade_sec: 0.15,
 };
 const CHOICES = {

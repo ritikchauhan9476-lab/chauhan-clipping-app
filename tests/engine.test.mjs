@@ -62,6 +62,22 @@ await test("probe + black bars", async () => {
   assert.match(crop, /^crop=1280:5\d\d:0:\d+$/);
 });
 
+await test("CapCut max preset: 1080p, 60 fps, 50 Mbps really comes out", async () => {
+  const s = E.sanitize({ ...E.EXPORT_PRESETS["CapCut max (1080p, 60 fps, 50 Mbps)"], codec: "H.264 (CPU)", aspect: "9:16" });
+  assert.equal(E.sanitize({}).fps, "60");
+  assert.equal(E.sanitize({}).bitrate, 50000);
+  assert.equal(E.sanitize({}).resolution, "1080p");
+  const out = path.join(paths.out, "capcut_max.mp4");
+  const r = new E.Runner(s, log, null, null, paths.cache);
+  assert.ok(await r.cut(media.movie, 1, 4, out, info, null), "export failed");
+  const p = probe(out), v = p.streams.find((x) => x.codec_type === "video");
+  assert.equal(`${v.width}x${v.height}`, "1080x1920");
+  const fr = execFileSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0", out]).toString().trim();
+  assert.equal(fr, "60/1", fr);
+  const kbps = +v.bit_rate / 1000;
+  assert.ok(kbps > 42000 && kbps < 58000, `video ${kbps} kbps, wanted about 50000`);
+});
+
 await test("export with everything (exact 8 Mbps, 9:16 blur, colour, overlay, text, music)", async () => {
   const out = path.join(paths.out, "full_edit.mp4");
   const s = E.sanitize({

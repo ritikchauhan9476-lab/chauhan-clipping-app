@@ -30,6 +30,8 @@ MAX_BITRATE = 150000
 RATE_MODES = ["Exact bitrate (use my number)", "Quality (bitrate is only a limit)"]
 # one-click export settings (Export tab > Quick preset)
 EXPORT_PRESETS = {
+    "CapCut max (1080p, 60 fps, 50 Mbps)": dict(resolution="1080p", fps="60", quality="High",
+                                                rate_mode=RATE_MODES[0], bitrate=50000, audio_bitrate="320k"),
     "Reels / Shorts - best quality (1080p, 12 Mbps)": dict(resolution="1080p", fps="Original", quality="High",
                                                            rate_mode=RATE_MODES[0], bitrate=12000, audio_bitrate="192k"),
     "YouTube 1080p (16 Mbps)": dict(resolution="1080p", fps="Original", quality="High",
