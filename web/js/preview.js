@@ -105,6 +105,35 @@ export async function compose(movie, t, sIn, info, crop = null) {
   let c0 = canvas(sw, sh);
   let x0 = c0.getContext("2d", { willReadFrequently: true });
   x0.drawImage(src, sx, sy, sw, sh, 0, 0, sw, sh);
+  // rotate / flip / free crop (same as the export)
+  const rot = String(s.rotate || "");
+  if (rot.startsWith("90") || rot.startsWith("180") || s.flip_h || s.flip_v) {
+    const turn = rot.startsWith("90");
+    const c1 = canvas(turn ? sh : sw, turn ? sw : sh), x1 = c1.getContext("2d", { willReadFrequently: true });
+    x1.translate(c1.width / 2, c1.height / 2);
+    if (rot.startsWith("90° right")) x1.rotate(Math.PI / 2);
+    else if (rot.startsWith("90° left")) x1.rotate(-Math.PI / 2);
+    else if (rot.startsWith("180")) x1.rotate(Math.PI);
+    x1.scale(s.flip_h ? (turn ? 1 : -1) : 1, s.flip_v ? (turn ? 1 : -1) : 1);
+    x1.drawImage(c0, -sw / 2, -sh / 2);
+    if (turn && (s.flip_h || s.flip_v)) {      // flips happen after the turn: mirror the turned picture
+      const c2 = canvas(c1.width, c1.height), x2 = c2.getContext("2d", { willReadFrequently: true });
+      x2.translate(s.flip_h ? c2.width : 0, s.flip_v ? c2.height : 0);
+      x2.scale(s.flip_h ? -1 : 1, s.flip_v ? -1 : 1);
+      x2.drawImage(c1, 0, 0);
+      c0 = c2; x0 = x2;
+    } else { c0 = c1; x0 = x1; }
+    x0.setTransform(1, 0, 0, 1, 0, 0);
+    sw = c0.width; sh = c0.height;
+  }
+  {
+    const [fx0, fy0, fw0, fh0] = E.freeCropBox(s, sw, sh);
+    if (fw0 !== sw || fh0 !== sh) {
+      const c1 = canvas(fw0, fh0), x1 = c1.getContext("2d", { willReadFrequently: true });
+      x1.drawImage(c0, fx0, fy0, fw0, fh0, 0, 0, fw0, fh0);
+      c0 = c1; x0 = x1; sw = fw0; sh = fh0;
+    }
+  }
   // chroma key + new background
   if (s.chroma_on) {
     const id = x0.getImageData(0, 0, sw, sh);
@@ -126,6 +155,13 @@ export async function compose(movie, t, sIn, info, crop = null) {
   if (cw0 !== sw) { const c1 = canvas(cw0, ch0); c1.getContext("2d").drawImage(c0, 0, 0, cw0, ch0); c0 = c1; x0 = c0.getContext("2d", { willReadFrequently: true }); }
   const colour = CL.applyColour(x0.getImageData(0, 0, c0.width, c0.height), s);
   x0.putImageData(colour, 0, 0);
+  const fxs = [s.fx_bw ? "grayscale(1)" : "", s.fx_sepia ? "sepia(1)" : "", +s.fx_blur > 0 ? `blur(${((+s.fx_blur * 0.4 * c0.width) / 1280).toFixed(1)}px)` : ""].filter(Boolean);
+  if (fxs.length) {
+    const c1 = canvas(c0.width, c0.height), x1 = c1.getContext("2d", { willReadFrequently: true });
+    x1.filter = fxs.join(" ");
+    x1.drawImage(c0, 0, 0);
+    c0 = c1; x0 = x1;
+  }
   // the movie's own crop
   const [cx, cy, cw, ch] = E.sourceCropBox(s, c0.width, c0.height);
   // final frame
@@ -184,7 +220,7 @@ export async function compose(movie, t, sIn, info, crop = null) {
   // texts
   const txs = s.texts.map((o, i) => ({ o, i })).sort((a, b) => layerOf(a.o) - layerOf(b.o));
   for (const { o, i } of txs) {
-    if (!String(o.text || "").trim() || !visible(o, t)) continue;
+    if (!E.stripColors(String(o.text || "")).trim() || !visible(o, t)) continue;
     await ensureFont(o, Math.max(8, Math.floor((H * +o.size) / 100)));
     const d = drawText(o, W, H);
     fx.drawImage(d.canvas, d.x, d.y);

@@ -17,6 +17,7 @@ export const SCENE_THR = 0.25;
 export const FLASH_SHOT = 0.3;
 export const MAX_CUT_RATE = 1.0;
 export const SNAP = 0.5;
+export const MONTAGE_DROP = 2.5;   // a fast-cut montage piece is skipped only when it is shorter (longer = real talking)
 
 // Audio of [start, start+length] as 16 kHz mono float samples (only that range is decoded).
 export async function readAudio(movie, start, length, tmpDir, job = null) {
@@ -50,14 +51,16 @@ export function frameDb(x, sr, hop = HOP) {
 }
 
 // ------------------------------------------------------------------ speech detection
-export function finishRegions(regs, total, padMs, minSilMs) {
+// tailMs: padding AFTER speech (a sentence end fades out slowly, so it needs more than the start); default = padMs
+export function finishRegions(regs, total, padMs, minSilMs, tailMs = null) {
   const gap = minSilMs / 1000, pad = padMs / 1000;
+  const tail = tailMs == null ? pad : Math.max(0, tailMs / 1000);
   const merged = [];
   for (const [s, e] of regs) {
     if (merged.length && s - merged[merged.length - 1][1] < gap) merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], e);
     else merged.push([s, e]);
   }
-  const padded = merged.map(([s, e]) => [Math.max(0, s - pad), Math.min(total, e + pad)]);
+  const padded = merged.map(([s, e]) => [Math.max(0, s - pad), Math.min(total, e + tail)]);
   const out = [];
   for (const [s, e] of padded) {
     if (out.length && s - out[out.length - 1][1] < MERGE_GAP) out[out.length - 1][1] = Math.max(out[out.length - 1][1], e);
@@ -209,18 +212,18 @@ export function probsToRegions(p, step, threshold = 0.5, minSpeech = 0.2) {
   return regs.filter(([s, e]) => e - s >= minSpeech);
 }
 
-export async function detectSpeech(x, padMs, minSilMs, log) {
+export async function detectSpeech(x, padMs, minSilMs, log, tailMs = null, threshold = 0.5) {
   const total = x.length / 16000;
   try {
-    const regs = probsToRegions(await sileroProbs(x), 512 / 16000);
-    return [finishRegions(regs, total, padMs, minSilMs), "Silero AI"];
+    const regs = probsToRegions(await sileroProbs(x), 512 / 16000, threshold);
+    return [finishRegions(regs, total, padMs, minSilMs, tailMs), "Silero AI"];
   } catch (e) {
     if (!warned.silero) {
       warned.silero = true;
       log(`Silero AI speech detector is not available (${String(e.message || e).slice(0, 100)}) - using the built-in detector.`);
     }
   }
-  return [finishRegions(voiceBandRegions(x, 16000), total, padMs, minSilMs), "built-in detector"];
+  return [finishRegions(voiceBandRegions(x, 16000), total, padMs, minSilMs, tailMs), "built-in detector"];
 }
 
 // ------------------------------------------------------------------ word removal helpers
@@ -284,7 +287,7 @@ export function pictureFix(regs, cuts, pad, lo, hi) {
   let dropped = 0, snapped = 0;
   const nearest = (arr, t) => arr.reduce((b, c) => (Math.abs(c - t) < Math.abs(b - t) ? c : b));
   for (let [s, e] of regs) {
-    if (isMontage(s, e, cuts)) { dropped++; continue; }
+    if (e - s < MONTAGE_DROP && isMontage(s, e, cuts)) { dropped++; continue; }   // short flash-cut burst only
     const s0 = s, e0 = e;
     let near = cuts.filter((c) => s - SNAP <= c && c <= s + pad);
     if (near.length) { const c = nearest(near, s); snapped += c !== s ? 1 : 0; s = c; }
@@ -305,6 +308,77 @@ export function pictureFix(regs, cuts, pad, lo, hi) {
   return [out, dropped, snapped];
 }
 
+// Final clean-up: pauses shorter than minGap are NOT cut (a tiny cut only makes the picture jump - a flash cut),
+// and no piece is shorter than minPiece.
+export function tidy(regs, lo, hi, minPiece, minGap) {
+  const out = [];
+  for (const [s, e] of [...regs].sort((a, b) => a[0] - b[0])) {
+    if (out.length && s - out[out.length - 1][1] < minGap) out[out.length - 1][1] = Math.max(out[out.length - 1][1], e);
+    else out.push([s, e]);
+  }
+  const res = [];
+  for (let [s, e] of out) {
+    if (e - s < minPiece) { const x = (minPiece - (e - s)) / 2; s = Math.max(lo, s - x); e = Math.min(hi, e + x); }
+    if (res.length && s <= res[res.length - 1][1] + MERGE_GAP) res[res.length - 1][1] = Math.max(res[res.length - 1][1], e);
+    else res.push([s, e]);
+  }
+  return res;
+}
+
+// ------------------------------------------------------------------ clean start / end (Simple Edit)
+// Looks ONLY at the first `seconds` of the part [a, b]: a silent (voice=true: or not talking) start is cut, never more
+// than `seconds`. Returns [newStart, info].
+export async function trimStart(movie, a, b, seconds, voice, noiseDb, tmpDir, log, job = null) {
+  seconds = Math.max(0.5, +seconds);
+  const winEnd = Math.min(b, a + seconds + 1.5);
+  if (winEnd - a < 1) return [a, "part too short, left as it is"];
+  let lead = 0, how = "";
+  if (voice) {
+    const info = await findSpeech(movie, a, winEnd, { pad_ms: 100, min_sil_ms: 300, min_piece: 0.3, vad: true }, tmpDir, log, job);
+    if (String(info.detector).startsWith("off")) voice = false;
+    else {
+      const regs = info.regions.filter((r) => r[1] - r[0] >= 0.15);
+      lead = regs.length ? regs[0][0] - a : seconds;
+      how = "first words";
+    }
+  }
+  if (!voice) {
+    const sil = await E.detectSilence(movie, noiseDb, 0.3, null, job, [[a, winEnd]]);
+    const first = sil.find((x) => x[0] <= a + 0.15);
+    lead = first ? Math.max(0, first[1] - a - 0.12) : 0;
+    how = "end of the silence";
+  }
+  lead = Math.min(lead, seconds);
+  if (lead < 0.25 || b - a - lead < 1) return [a, "starts with talking already"];
+  return [a + lead, `${lead.toFixed(2)}s cut (${how})`];
+}
+
+// The mirror: only the last `seconds`; the video ends right after the last words. Returns [newEnd, info].
+export async function trimEnd(movie, a, b, seconds, voice, noiseDb, tmpDir, log, job = null) {
+  seconds = Math.max(0.5, +seconds);
+  const winStart = Math.max(a, b - seconds - 1.5);
+  if (b - winStart < 1) return [b, "part too short, left as it is"];
+  let trail = 0, how = "";
+  if (voice) {
+    const info = await findSpeech(movie, winStart, b, { pad_ms: 100, tail_ms: 350, min_sil_ms: 300, min_piece: 0.3, vad: true }, tmpDir, log, job);
+    if (String(info.detector).startsWith("off")) voice = false;
+    else {
+      const regs = info.regions.filter((r) => r[1] - r[0] >= 0.15);
+      trail = regs.length ? b - regs[regs.length - 1][1] : seconds;
+      how = "last words";
+    }
+  }
+  if (!voice) {
+    const sil = await E.detectSilence(movie, noiseDb, 0.3, null, job, [[winStart, b]]);
+    const last = [...sil].reverse().find((x) => x[1] >= b - 0.15);
+    trail = last ? Math.max(0, b - last[0] - 0.3) : 0;
+    how = "start of the final silence";
+  }
+  trail = Math.min(trail, seconds);
+  if (trail < 0.25 || b - trail - a < 1) return [b, "ends with talking already"];
+  return [b - trail, `${trail.toFixed(2)}s cut at the end (${how})`];
+}
+
 // ------------------------------------------------------------------ one range
 // Where is anyone talking between start and end (movie seconds)?
 // Returns {regions: [[abs_start, abs_end], ...], contour: [abs_t0, hop, dB array], detector}
@@ -316,7 +390,7 @@ export async function findSpeech(movie, start, end, opts, tmpDir, log, job = nul
   const minsil = parseInt(opts.min_sil_ms ?? MIN_SIL_MS, 10);
   let regs, name;
   if (!x.length) { regs = []; name = "no sound"; }
-  else if (opts.vad !== false) [regs, name] = await detectSpeech(x, pad, minsil, log);
+  else if (opts.vad !== false) [regs, name] = await detectSpeech(x, pad, minsil, log, opts.tail_ms == null ? null : +opts.tail_ms, +(opts.vad_threshold ?? 0.5));
   else { regs = [[0, total]]; name = "off (whole range kept)"; }
   const remove = String(opts.remove_words || "").split(/[,;]/).filter((w) => w.trim());
   if (regs.length && opts.whisper && remove.length) {
@@ -332,12 +406,15 @@ export async function findSpeech(movie, start, end, opts, tmpDir, log, job = nul
       log(`Text editing skipped (Whisper failed: ${String(e.message || e).slice(0, 150)}). Silence cutting still applied.`);
     }
   }
-  regs = smoothPieces(regs, total, parseFloat(opts.min_piece ?? MIN_PIECE));
+  const minPiece = parseFloat(opts.min_piece ?? MIN_PIECE), minGap = (+opts.min_cut_ms || 0) / 1000;
+  regs = smoothPieces(regs, total, minPiece);
+  if (minGap > 0) regs = tidy(regs, 0, total, minPiece, minGap);
   let absRegs = regs.map(([s, e]) => [start + s, start + e]);
   if (opts.scan_picture && absRegs.length) {
     const cuts = await sceneCuts(movie, start, end, SCENE_THR, job);
     let dropped, snapped;
     [absRegs, dropped, snapped] = pictureFix(absRegs, cuts, pad / 1000, start, end);
+    if (minGap > 0) absRegs = tidy(absRegs, start, end, minPiece, minGap);   // snapping can leave slivers
     log(`  picture scan: ${cuts.length} shot changes, ${dropped} fast-cut montage piece(s) skipped, ${snapped} cut(s) moved onto a shot change`);
   }
   return { regions: absRegs, contour: [start, HOP, frameDb(x, 16000)], detector: name };

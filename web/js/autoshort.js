@@ -34,10 +34,19 @@ export function pickGroup(buf, minLen, maxLen, final = false) {
     acc += buf[k - 1][1] - buf[k - 1][0];
     if (acc >= minLen && k < buf.length) {
       const gap = buf[k][0] - buf[k - 1][1];
-      if (gap >= GOOD_GAP && gap >= bestGap) { bestK = k; bestGap = gap; }
+      // end at the BIGGEST pause after the minimum length (= end of a sentence), never mid-talk when a pause exists
+      if (gap >= bestGap || (gap >= GOOD_GAP && bestGap >= GOOD_GAP)) { bestK = k; bestGap = gap; }
     }
   }
   return [buf.slice(0, bestK), buf.slice(bestK)];
+}
+
+export const END_HOLD = 0.3;   // the last words of a short get this much more time (if the pause allows it)
+export function holdEnd(group, rest, limit) {
+  if (!group.length) return group;
+  const [s, e] = group[group.length - 1];
+  const room = rest.length ? rest[0][0] - 0.05 : limit;
+  return [...group.slice(0, -1), [s, Math.max(e, Math.min(e + END_HOLD, room))]];
 }
 
 // [[start, length], ...]: if there are too many, the smallest gaps are bridged (nothing is dropped).
@@ -76,7 +85,8 @@ export class AutoShortJob {
     maxLen = MAX_LEN, firstNumber = 1, keepLast = false, chunk = CHUNK, allRanges = null, indexBase = 0,
     priorMade = null, onResume = null }) {
     Object.assign(this, { movie, ranges, items, outDir, tmpDir, log, progress, onShort, keepLast, onResume });
-    this.opts = { ...opts };
+    // fewer flash cuts / nothing important lost (each can be changed in the Auto Short panel)
+    this.opts = { tail_ms: 350, min_cut_ms: 500, vad_threshold: 0.45, ...opts };
     this.minLen = +minLen; this.maxLen = +maxLen;
     this.number = parseInt(firstNumber, 10) || 1;
     this.chunk = +chunk;
@@ -160,6 +170,7 @@ export class AutoShortJob {
         if (!g) break;
         let group;
         [group, buf] = g;
+        group = holdEnd(group, buf, b);
         if (!(await this.render(group))) buf = [...group, ...buf];   // stopped in the middle: still to do
         await this.mark(buf.length ? Math.min(buf[0][0], t) : t);
       }
@@ -173,6 +184,7 @@ export class AutoShortJob {
       if (g) {
         let group;
         [group, buf] = g;
+        group = holdEnd(group, buf, b);
         if (!(await this.render(group))) { buf = [...group, ...buf]; await this.mark(buf[0][0]); break; }
         continue;
       }

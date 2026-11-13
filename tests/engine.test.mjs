@@ -62,6 +62,47 @@ await test("probe + black bars", async () => {
   assert.match(crop, /^crop=1280:5\d\d:0:\d+$/);
 });
 
+await test("app port: tidy, short ends at the biggest pause, end hold", async () => {
+  assert.deepEqual(D.tidy([[0, 1], [1.3, 2], [2.1, 2.3], [5, 9]], 0, 10, 1.0, 0.5), [[0, 2.3], [5, 9]]);
+  const [g, rest] = A.pickGroup([[0, 10], [10, 20], [20.2, 30], [30, 40], [41.5, 50], [50, 55], [55.1, 62]], 30, 59);
+  assert.deepEqual(g[g.length - 1], [30, 40]); assert.deepEqual(rest[0], [41.5, 50]);
+  assert.deepEqual(A.holdEnd(g, rest, 100).slice(-1)[0], [30, 40.3]);
+  assert.equal(D.finishRegions([[1, 2]], 10, 100, 300, 400)[0][1], 2.4);
+});
+
+await test("app port: clean start / clean end only touch the start / end", async () => {
+  const mv = path.join(paths.cache, "tone_gaps.mp4");
+  execFileSync("ffmpeg", ["-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=12",
+    "-f", "lavfi", "-i", "sine=frequency=300:duration=12", "-af", "volume='if(lt(mod(t,3),2),1,0)':eval=frame",
+    "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", mv]);
+  const [ns] = await D.trimStart(mv, 2.0, 8.0, 3, false, -35, paths.cache, log);
+  assert.ok(ns > 2.6 && ns < 3.0, "start " + ns);
+  const [same] = await D.trimStart(mv, 0.0, 6.0, 3, false, -35, paths.cache, log);
+  assert.equal(same, 0);
+  const [ne] = await D.trimEnd(mv, 0.0, 6.0, 3, false, -35, paths.cache, log);
+  assert.ok(ne > 5.0 && ne < 5.6, "end " + ne);
+  const [ne2] = await D.trimEnd(mv, 0.0, 4.8, 3, false, -35, paths.cache, log);
+  assert.equal(ne2, 4.8);
+});
+
+await test("app port: rotate, flip, free crop, speed 2x, fades, effects + every text animation export", async () => {
+  const out = path.join(paths.out, "pro_edit.mp4");
+  const T = (k) => ({ text: "hello words here now", start: 0, end: 0, ...k });
+  const s = E.sanitize({ aspect: "9:16", resolution: "480p", codec: "H.264 (CPU)", quality: "Fast (phone)", rotate: "90° right", flip_h: true,
+    crop_l: 10, crop_t: 5, speed: 2.0, vfade_in: 0.5, vfade_out: 0.5, fx_sepia: true, fx_blur: 2, fx_denoise: true, fx_stab: true,
+    texts: [...E.ANIM_IN.map((a, i) => T({ anim_in: a, anim_out: E.ANIM_OUT[i % E.ANIM_OUT.length], anim_loop: E.ANIM_LOOP[i % E.ANIM_LOOP.length], pos: "Custom", x: 5, y: 5 + i * 9 })),
+      T({ text: "Part {c=#FF0000}red{/c} word", underline: true, glow: true, case: "UPPERCASE" })] });
+  const r = new E.Runner(s, log, null, null, paths.cache);
+  assert.ok(await r.cut(media.movie, 5, 8, out, info, null), "export failed");
+  const p = probe(out), v = p.streams.find((x) => x.codec_type === "video");
+  assert.ok(Math.abs(+p.format.duration - 4) < 0.3, "8 s at 2x should be 4 s: " + p.format.duration);
+  assert.ok(v.height > v.width, `${v.width}x${v.height}`);
+  const A2 = E.textAnim({ ...E.TEXT_DEFAULT, text: "a b c d", anim_in: "Typewriter", anim_in_dur: 1 }, 0, 5, 1080, 1920);
+  assert.equal(A2.steps.length, 4);
+  assert.equal(E.stripColors("x {c=#ff0000}y{/c} z"), "x y z");
+  assert.deepEqual(E.colorLines("a {c=#FF0000}b{/c}\nc", "#FFFFFF"), [[["a ", "#FFFFFF"], ["b", "#FF0000"]], [["c", "#FFFFFF"]]]);
+});
+
 await test("CapCut max preset: 1080p, 60 fps, 50 Mbps really comes out", async () => {
   const s = E.sanitize({ ...E.EXPORT_PRESETS["CapCut max (1080p, 60 fps, 50 Mbps)"], codec: "H.264 (CPU)", aspect: "9:16" });
   assert.equal(E.sanitize({}).fps, "60");

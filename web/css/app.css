@@ -68,6 +68,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
 .btnrow .btn { flex: 1 1 auto; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+.grid3 .chk { min-width: 0; }
 
 .row { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
 .row > label { flex: 1 1 45%; color: var(--text); }

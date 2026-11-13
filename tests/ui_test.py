@@ -111,7 +111,7 @@ def main():
         # text with part number
         V.locator(".chip", has_text="Text").click()
         V.get_by_role("button", name="+ Add text").click()
-        ta = V.locator("textarea")
+        ta = V.locator("textarea").nth(1)          # nth(0) = 'other words on this video only'
         ta.fill("Part 1 नमस्ते दोस्तों")
         ta.dispatch_event("input")
         V.get_by_role("button", name="Make selected number = part number").click()
@@ -119,6 +119,27 @@ def main():
         V.get_by_role("button", name="Center on screen").click()
         time.sleep(2.5)
         shot(page, "06_text")
+        # CapCut-style text: one-tap style, coloured word, underline, animation, per-video show / hide
+        V.get_by_role("button", name="Neon blue").click()
+        time.sleep(0.5)
+        it = page.evaluate("() => window.ccApp.simple.items.find(i => i.kind === 'text')")
+        assert it["glow"] and it["glow_color"] == "#00E5FF", it
+        page.evaluate("() => { const s = window.ccApp.simple; const t = s.items.find(i => i.kind === 'text'); t.text = 'Part {n} {c=#FF0000}नमस्ते{/c} दोस्तों'; t.underline = true; t.anim_in = 'Pop'; s.showPanel('Text'); s.scheduleRender(); }")
+        V.get_by_role("button", name="Hide on all").click()
+        n_tx = page.evaluate("() => { const s = window.ccApp.simple; return s.previewSettings(s.currentPart(), 1).texts.length; }")
+        assert n_tx == 0, n_tx
+        V.get_by_role("button", name="Show on all").click()
+        time.sleep(2.5)
+        shot(page, "06b_text_styles")
+        # effects + rotate preview, clean start / end panel
+        V.locator(".chip", has_text="Effects").click()
+        page.evaluate("() => { const s = window.ccApp.simple; s.cfg.fx_sepia = true; s.cfg.crop_l = 10; s.scheduleRender(); }")
+        time.sleep(2.5)
+        shot(page, "06c_effects")
+        page.evaluate("() => { const s = window.ccApp.simple; s.cfg.fx_sepia = false; s.cfg.crop_l = 0; s.scheduleRender(); }")
+        V.locator(".chip", has_text="Clean").click()
+        assert V.get_by_role("button", name="Test on the part shown in the preview").count() == 1
+        V.locator(".chip", has_text="Text").click()
         # overlay
         V.locator(".chip", has_text="Overlay").click()
         V.get_by_role("button", name="+ Add photo / video").click()
@@ -155,6 +176,8 @@ def main():
         wait_engine(page, "window.ccApp.simple.eng")
         wait_text(page, 'section.view[data-tab="simple"] .panel .status', "Done", timeout=60)
         shot(page, "09_exported")
+        assert page.evaluate("() => window.ccApp.simple.doneNames.size") == 1   # remembered for 'continue where it stopped'
+
         log = V.locator(".panel .log").inner_text()
         assert "Saved:" in log and "Silence" not in log and "dialogue" not in log.lower(), log[-800:]
         # the cutting tools are in AI Clipping

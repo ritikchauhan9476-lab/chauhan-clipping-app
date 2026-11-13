@@ -13,7 +13,7 @@ export class AutoShortTab {
     this.app = app; this.simple = simple;
     this.running = false; this.job = null; this.resume = null; this.outDir = "";
     this.o = { use_parts: false, start: "0", end: "", min_len: A.MIN_LEN, max_len: A.MAX_LEN, keep_last: false, pad: D.PAD_MS,
-      minsil: D.MIN_SIL_MS, denoise: true, min_piece: D.MIN_PIECE, scan_picture: true,
+      minsil: D.MIN_SIL_MS, denoise: true, min_piece: 1.5, scan_picture: true, tail: 350, mincut: 500, vthr: 0.45,
       boost: { ...E.BOOST_DEFAULT } };
     this.build();
   }
@@ -51,7 +51,11 @@ export class AutoShortTab {
       section("TALKING DETECTION (AI)"),
       new NumField("Speech padding (ms)", 0, 500, 10, o.pad, { fmt: 0, onChange: (v) => { o.pad = v; ch(); } }).el,
       new NumField("Minimum silence (ms)", 50, 1000, 10, o.minsil, { fmt: 0, onChange: (v) => { o.minsil = v; ch(); } }).el,
+      new NumField("End-of-sentence padding (ms)", 0, 1000, 10, o.tail, { fmt: 0, onChange: (v) => { o.tail = v; ch(); } }).el,
+      new NumField("Shortest pause that is cut (ms)", 0, 2000, 50, o.mincut, { fmt: 0, onChange: (v) => { o.mincut = v; ch(); } }).el,
       new NumField("Shortest clip (s)", 0, 5, 0.1, o.min_piece, { fmt: 1, onChange: (v) => { o.min_piece = v; ch(); } }).el,
+      new NumField("Talking sensitivity", 0.2, 0.8, 0.05, o.vthr, { fmt: 2, onChange: (v) => { o.vthr = v; ch(); } }).el,
+      note("Fewer flash cuts: pauses shorter than 'Shortest pause that is cut' stay in, and no clip is shorter than 'Shortest clip'. End-of-sentence padding keeps the last syllables. Lower talking sensitivity keeps soft / quiet talking. A short ends at the biggest pause, not in the middle of talking."),
       checkField("Noise reduction on the sound", o.denoise, (v) => { o.denoise = v; ch(); }).el,
       checkField("Scan the picture: skip fast-cut montage, cut on shot changes", o.scan_picture, (v) => { o.scan_picture = v; ch(); }).el,
       note("Everything where nobody is talking is cut from the picture AND the sound. Smaller padding = tighter, faster talking. Shortest clip: no piece is shorter than this, so there are no 0.2 s flashes. Scan the picture: parts with very fast picture cuts (action montage, music) are skipped and every cut is moved onto a real shot change (a little slower). The detector is the Silero AI model; without it a simpler built-in detector is used."),
@@ -142,7 +146,8 @@ export class AutoShortTab {
       ranges = [[a, b]];
     }
     const opts = { ...sm.dialogueOpts(), pad_ms: parseInt(o.pad, 10), min_sil_ms: parseInt(o.minsil, 10), denoise: !!o.denoise, vad: true,
-      min_piece: +o.min_piece, scan_picture: !!o.scan_picture, boost: this.boostOpts() };
+      min_piece: +o.min_piece, scan_picture: !!o.scan_picture, boost: this.boostOpts(),
+      tail_ms: +o.tail, min_cut_ms: +o.mincut, vad_threshold: +o.vthr };
     const s = E.sanitize(sm.cfg);
     this.outDir = this.folder();
     this.log.clear();
@@ -192,7 +197,8 @@ export class AutoShortTab {
     o.use_parts = !!st.use_parts; o.start = String(st.start ?? "0"); o.end = String(st.end ?? "");
     o.min_len = +(st.min_len ?? A.MIN_LEN); o.max_len = +(st.max_len ?? A.MAX_LEN); o.keep_last = !!st.keep_last;
     o.pad = +(st.pad ?? D.PAD_MS); o.minsil = +(st.minsil ?? D.MIN_SIL_MS); o.denoise = st.denoise ?? true;
-    o.min_piece = +(st.min_piece ?? D.MIN_PIECE); o.scan_picture = st.scan_picture ?? true;
+    o.min_piece = +(st.min_piece ?? 1.5); o.scan_picture = st.scan_picture ?? true;
+    o.tail = +(st.tail ?? 350); o.mincut = +(st.mincut ?? 500); o.vthr = +(st.vthr ?? 0.45);
     o.boost = { ...E.BOOST_DEFAULT, ...(st.boost || {}) };
     this.resume = null;
     this.setResume(st.resume || null);

@@ -12,7 +12,8 @@ export const AUDIO_EXT = [".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".wma
 export const FOCUS = ["Funny", "Emotional", "Funny + Emotional"];
 export const LANGS = ["hi", "en", "auto"];
 export const WHISPER = ["tiny", "base", "small"];
-export const ASPECTS = ["Original", "1:1", "4:3", "3:2", "16:9", "9:16", "4:5", "21:9"];
+export const ASPECTS = ["Original", "1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "4:5", "5:4", "21:9"];
+export const ROTATIONS = ["No rotation", "90° right", "180°", "90° left"];
 export const FIT_MODES = ["Crop (fill frame)", "Blur background", "Black bars", "Solid colour"];
 export const RES = ["Original", "480p", "720p", "1080p", "1440p", "2160p (4K)"];
 export const FPS = ["Original", "24", "25", "30", "50", "60"];
@@ -49,7 +50,40 @@ export const TEXT_DEFAULT = {
   text: "Your text", font: "Noto Sans", size: 6.0, color: "#FFFFFF", opacity: 100, outline: 2,
   outline_color: "#000000", shadow: false, box: false, box_color: "#000000", box_opacity: 50,
   pos: "Bottom-Center", x: 50, y: 80, start: 0, end: 0, layer: 1, hcenter: false, vcenter: false, bold: true,
+  // CapCut-style text options
+  italic: false, underline: false, case: "As typed", align: "Center", line_spacing: 0, shadow_color: "#000000",
+  shadow_opacity: 60, shadow_dist: 3, shadow_angle: 45, glow: false, glow_color: "#00E5FF", glow_size: 8, box_pad: 30,
+  anim_in: "None", anim_in_dur: 0.5, anim_out: "None", anim_out_dur: 0.5, anim_loop: "None",
 };
+export const TEXT_CASES = ["As typed", "UPPERCASE", "lowercase", "Title Case"];
+export const TEXT_ALIGNS = ["Left", "Center", "Right"];
+export const ANIM_IN = ["None", "Fade", "Slide up", "Slide down", "Slide left", "Slide right", "Pop", "Typewriter"];
+export const ANIM_OUT = ["None", "Fade", "Slide up", "Slide down", "Slide left", "Slide right", "Pop"];
+export const ANIM_LOOP = ["None", "Pulse", "Bounce", "Shake", "Blink"];
+
+// coloured words inside a text: "Hello {c=#FF0000}world{/c}"
+export const COLOR_TAG = /\{c=#?([0-9A-Fa-f]{6})\}([\s\S]*?)\{\/c\}/gi;
+export const stripColors = (t) => String(t).replace(COLOR_TAG, (m, c, w) => w);
+export function applyCase(text, cs) {
+  if (cs === "UPPERCASE") return text.toUpperCase();
+  if (cs === "lowercase") return text.toLowerCase();
+  if (cs === "Title Case") return text.replace(/(^|[\s}])(\p{L})/gu, (m, a, b) => a + b.toUpperCase());
+  return text;
+}
+// text -> [[[run, "#RRGGBB"], ...] per line]
+export function colorLines(text, base) {
+  const runs = [];
+  let pos = 0;
+  for (const m of text.matchAll(COLOR_TAG)) {
+    if (m.index > pos) runs.push([text.slice(pos, m.index), base]);
+    runs.push([m[2], "#" + m[1].toUpperCase()]);
+    pos = m.index + m[0].length;
+  }
+  if (pos < text.length) runs.push([text.slice(pos), base]);
+  const lines = [[]];
+  for (const [t, c] of runs) t.split("\n").forEach((chunk, i) => { if (i) lines.push([]); if (chunk) lines[lines.length - 1].push([chunk, c]); });
+  return lines;
+}
 export const AUDIO_DEFAULT = { path: "", layer: 1, start: 0, end: 0, src_offset: 0, volume: 100, loop: true };
 
 export const DEFAULTS = {
@@ -59,6 +93,9 @@ export const DEFAULTS = {
   brightness: 0, contrast: 1, saturation: 1, gamma: 1, sharpness: 0, hue: 0, warmth: 0, auto_crop: true,
   src_aspect: "Original", aspect: "Original", fit_mode: "Blur background", resolution: "1080p", fps: "60",
   zoom: 1.0, crop_x: 50, crop_y: 50,
+  // pro editing: rotate / flip / free crop / speed / fades / effects
+  rotate: "No rotation", flip_h: false, flip_v: false, crop_l: 0, crop_r: 0, crop_t: 0, crop_b: 0,
+  speed: 1.0, vfade_in: 0, vfade_out: 0, fx_bw: false, fx_sepia: false, fx_blur: 0, fx_denoise: false, fx_stab: false,
   bg_color: "#1E1E1E", blur_amount: 25, fit_scale: 100, fit_y: 50,
   ...CL.NEW_DEFAULTS,
   chroma_on: false, chroma_color: "#00FF00", chroma_sim: 0.15, chroma_blend: 0.1, chroma_spill: true,
@@ -69,7 +106,7 @@ export const DEFAULTS = {
   fade_sec: 0.15,
 };
 const CHOICES = {
-  src_aspect: ASPECTS, aspect: ASPECTS, fit_mode: FIT_MODES, resolution: RES, fps: FPS, codec: CODECS, x264_preset: X264_PRESETS,
+  rotate: ROTATIONS, src_aspect: ASPECTS, aspect: ASPECTS, fit_mode: FIT_MODES, resolution: RES, fps: FPS, codec: CODECS, x264_preset: X264_PRESETS,
   rate_mode: RATE_MODES, audio_bitrate: ABR, focus: FOCUS, language: LANGS, whisper_model: WHISPER,
   music_mode: MUSIC_MODES, chroma_bg_type: BG_TYPES, quality: Object.keys(QUALITY),
 };
@@ -100,7 +137,48 @@ export function sanitize(src) {
   s.audios = s.audios.filter((a) => a && typeof a === "object").map((a) => ({ ...AUDIO_DEFAULT, ...a }));
   s.overlays = s.overlays.filter((a) => a && typeof a === "object").map((a) => ({ ...OVERLAY_DEFAULT, ...a }));
   s.texts = s.texts.filter((a) => a && typeof a === "object").map((a) => ({ ...TEXT_DEFAULT, ...a }));
+  s.speed = Math.min(4, Math.max(0.25, s.speed || 1));
   return s;
+}
+
+// ------------------------------------------------------------------ pro editing helpers
+// free crop: % cut from each side -> [x, y, w, h] (even numbers)
+export function freeCropBox(s, sw, sh) {
+  const c = (k) => Math.max(0, Math.min(45, +s[k] || 0)) / 100;
+  const l = c("crop_l"), r = c("crop_r"), t = c("crop_t"), b = c("crop_b");
+  const w = Math.max(16, Math.floor((sw * (1 - l - r)) / 2) * 2), h = Math.max(16, Math.floor((sh * (1 - t - b)) / 2) * 2);
+  return [Math.floor((sw * l) / 2) * 2, Math.floor((sh * t) / 2) * 2, w, h];
+}
+// rotate, flip, free crop, stabilise, denoise of the imported movie -> [filters, w, h]
+export function geometryFilters(s, sw, sh) {
+  const f = [];
+  if (s.fx_stab) f.push("deshake=rx=32:ry=32:edge=mirror");
+  if (s.fx_denoise) f.push("hqdn3d=3:3:6:6");
+  const rot = String(s.rotate || "");
+  if (rot.startsWith("90° right")) { f.push("transpose=1"); [sw, sh] = [sh, sw]; }
+  else if (rot.startsWith("90° left")) { f.push("transpose=2"); [sw, sh] = [sh, sw]; }
+  else if (rot.startsWith("180")) f.push("hflip,vflip");
+  if (s.flip_h) f.push("hflip");
+  if (s.flip_v) f.push("vflip");
+  const [x, y, w, h] = freeCropBox(s, sw, sh);
+  if (w !== sw || h !== sh) { f.push(`crop=${w}:${h}:${x}:${y}`); sw = w; sh = h; }
+  return [f, sw, sh];
+}
+export function effectFilters(s) {
+  const f = [];
+  if (s.fx_bw) f.push("hue=s=0");
+  if (s.fx_sepia) f.push("colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131");
+  if (+s.fx_blur > 0) f.push(`gblur=sigma=${(+s.fx_blur * 0.4).toFixed(2)}`);
+  return f;
+}
+// atempo takes 0.5 - 2.0 per step
+export function atempoChain(speed) {
+  const out = [];
+  let sp = +speed;
+  while (sp > 2) { out.push("atempo=2.0"); sp /= 2; }
+  while (sp < 0.5) { out.push("atempo=0.5"); sp /= 0.5; }
+  out.push(`atempo=${sp.toFixed(4)}`);
+  return out.join(",");
 }
 
 // ------------------------------------------------------------------ small path helpers (Android / Linux paths)
@@ -341,6 +419,7 @@ export function frameGeometry(s, info, crop) {
     const m = /crop=(\d+):(\d+):/.exec(crop);
     if (m) { sw = +m[1]; sh = +m[2]; }
   }
+  [, sw, sh] = geometryFilters(s, sw, sh);
   const [, , cw, ch] = sourceCropBox(s, sw, sh);
   const [OW, OH] = outSize(s, cw, ch);
   return { srcW: sw, srcH: sh, cropW: cw, cropH: ch, OW, OH };
@@ -360,6 +439,44 @@ async function ffNewSyntax() {
     } catch (e) { _ffNew = true; }
   }
   return _ffNew;
+}
+
+// In / Out / Loop animation of a text picture: FFmpeg expressions (position offsets, size, fades, blink, typewriter)
+export function textAnim(t, tst, ten, OW, OH) {
+  const span = Math.max(0.1, ten - tst);
+  const aIn = String(t.anim_in || "None"), aOut = String(t.anim_out || "None"), loop = String(t.anim_loop || "None");
+  const din = aIn !== "None" ? Math.min(Math.max(0.05, +t.anim_in_dur || 0.5), span / 2) : 0;
+  const dout = aOut !== "None" ? Math.min(Math.max(0.05, +t.anim_out_dur || 0.5), span / 2) : 0;
+  const pin = din ? `clip((t-${tst.toFixed(3)})/${din.toFixed(3)},0,1)` : "1";
+  const pout = dout ? `clip((${ten.toFixed(3)}-t)/${dout.toFixed(3)},0,1)` : "1";
+  const eIn = `(1-pow(1-${pin},2))`, eOut = `(1-pow(1-${pout},2))`, lt = `(t-${tst.toFixed(3)})`;
+  const dx = [], dy = [], sc = [], fades = [];
+  const distx = 0.12 * OW, disty = 0.08 * OH;
+  const dirs = { "Slide up": [0, 1], "Slide down": [0, -1], "Slide left": [1, 0], "Slide right": [-1, 0] };
+  if (dirs[aIn]) { const [a, b] = dirs[aIn]; if (a) dx.push(`${(a * distx).toFixed(1)}*(1-${eIn})`); else dy.push(`${(b * disty).toFixed(1)}*(1-${eIn})`); }
+  if (dirs[aOut]) { const [a, b] = dirs[aOut]; if (a) dx.push(`${(-a * distx).toFixed(1)}*(1-${eOut})`); else dy.push(`${(-b * disty).toFixed(1)}*(1-${eOut})`); }
+  if (aIn === "Pop") sc.push(`(0.3+0.7*${eIn}+0.15*sin(PI*${pin}))`);
+  if (aOut === "Pop") sc.push(`(0.2+0.8*${eOut})`);
+  if (loop === "Pulse") sc.push(`(1+0.07*sin(2*PI*${lt}/0.9))`);
+  else if (loop === "Bounce") dy.push(`-${(0.018 * OH).toFixed(1)}*abs(sin(2*PI*${lt}/1.4))`);
+  else if (loop === "Shake") dx.push(`${Math.max(2, (4 * OH) / 1080).toFixed(1)}*sin(2*PI*${lt}*9)`);
+  if (din && aIn !== "Typewriter") fades.push(`fade=t=in:st=${tst.toFixed(3)}:d=${din.toFixed(3)}:alpha=1`);
+  if (dout) fades.push(`fade=t=out:st=${(ten - dout).toFixed(3)}:d=${dout.toFixed(3)}:alpha=1`);
+  const blink = loop === "Blink" ? `*lt(mod(t-${tst.toFixed(3)},0.8),0.55)` : "";
+  // typewriter: the words appear one by one during the 'In' time (a word is never split: fine for Hindi too)
+  let words = 0, steps = [];
+  if (aIn === "Typewriter" && din) {
+    words = stripColors(t.text).split(/\s+/).filter(Boolean).length;
+    if (words > 1) {
+      const group = Math.max(1, Math.ceil(words / 40));
+      const counts = [];
+      for (let k = group; k < words; k += group) counts.push(k);
+      const step = din / (counts.length + 1);
+      steps = counts.map((k, i) => [k, tst + i * step, tst + (i + 1) * step]);
+      steps.push([null, tst + counts.length * step, ten]);
+    }
+  }
+  return { dx: dx.join("+") || "0", dy: dy.join("+") || "0", scale: sc.join("*"), fades, blink, words, steps };
 }
 
 export async function buildCommand(movie, start, dur, out, sIn, info, { crop = null, codec = null, pieces = null, tmpDir = "" } = {}) {
@@ -383,6 +500,9 @@ export async function buildCommand(movie, start, dur, out, sIn, info, { crop = n
     const m = /crop=(\d+):(\d+):/.exec(crop);
     if (m) { sw = +m[1]; sh = +m[2]; pre.push(crop); }
   }
+  const [geo, gw, gh] = geometryFilters(s, sw, sh);
+  pre.push(...geo);
+  sw = gw; sh = gh;
   pre.push("setsar=1");
   fl.push(`${vin}${pre.join(",")}[v0]`);
   const newlab = () => `[s${++st.n}]`;
@@ -404,7 +524,7 @@ export async function buildCommand(movie, start, dur, out, sIn, info, { crop = n
     st.cur = lab;
   }
 
-  const cf = CL.ffmpegColour(s, sw);
+  const cf = [...CL.ffmpegColour(s, sw), ...effectFilters(s)];
   if (cf.length) add(cf.join(","));
 
   // 1) IMPORTED MOVIE crop
@@ -487,22 +607,33 @@ export async function buildCommand(movie, start, dur, out, sIn, info, { crop = n
     st.cur = lab;
   }
 
-  // text layers: drawn by the phone into transparent pictures, placed with overlay
+  // text layers: drawn by the phone into transparent pictures, placed with overlay (+ In / Out / Loop animations)
   for (const t0 of [...s.texts].sort(byLayer)) {
     const t = { ...TEXT_DEFAULT, ...t0 };
-    if (!String(t.text).trim()) continue;
+    if (!stripColors(t.text).trim()) continue;
     const sp = span(t, start, dur);
     if (!sp) continue;
     if (!textRenderer) throw new Error("Text drawing is not ready.");
-    const img = await textRenderer(t, OW, OH, tmpDir);
-    if (!img) continue;
-    tmp.push(img.path);
     const [tst, ten] = sp;
-    const i = addInput(["-loop", "1", "-i", img.path]);
-    fl.push(`[${i}:v:0]format=yuva420p[t${i}]`);
-    const lab = newlab();
-    fl.push(`${st.cur}[t${i}]overlay=x=${Math.round(img.x)}:y=${Math.round(img.y)}:enable='between(t,${tst.toFixed(3)},${ten.toFixed(3)})':eof_action=pass:format=auto${lab}`);
-    st.cur = lab;
+    const A = textAnim(t, tst, ten, OW, OH);
+    // typewriter: one picture per number of words shown, each for its own moment
+    const frames = A.words > 1 ? A.steps : [[null, tst, ten]];
+    for (const [reveal, a, b] of frames) {
+      const img = await textRenderer(reveal === null ? t : { ...t, _reveal: reveal }, OW, OH, tmpDir);
+      if (!img) continue;
+      tmp.push(img.path);
+      const i = addInput(["-loop", "1", "-i", img.path]);
+      const steps = ["format=yuva420p"];
+      if (A.scale) steps.push(`scale=w='max(2,trunc(iw*(${A.scale})/2)*2)':h='max(2,trunc(ih*(${A.scale})/2)*2)':eval=frame`);
+      steps.push(...A.fades);
+      fl.push(`[${i}:v:0]${steps.join(",")}[t${i}]`);
+      const lab = newlab();
+      // the picture keeps its centre when it grows / shrinks (pop, pulse)
+      const cx = A.scale ? `${Math.round(img.x)}+(${img.w || 0}-w)/2` : String(Math.round(img.x));
+      const cy = A.scale ? `${Math.round(img.y)}+(${img.h || 0}-h)/2` : String(Math.round(img.y));
+      fl.push(`${st.cur}[t${i}]overlay=x='${cx}+${A.dx}':y='${cy}+${A.dy}':enable='between(t,${a.toFixed(3)},${b.toFixed(3)})${A.blink}':eval=frame:eof_action=pass:format=auto${lab}`);
+      st.cur = lab;
+    }
   }
 
   if (boost.bar && dur > 1) {                      // thin progress bar along the top: viewers stay to see it fill
@@ -512,11 +643,20 @@ export async function buildCommand(movie, start, dur, out, sIn, info, { crop = n
     fl.push(`${st.cur}[pbar]overlay=x='-w+w*t/${dur.toFixed(3)}':y=0:shortest=1:format=auto${lab}`);
     st.cur = lab;
   }
-  fl.push(`${st.cur}format=yuv420p[vout]`);
+  const speed = Math.max(0.25, Math.min(4, +s.speed || 1));
+  const fi = +s.vfade_in || 0, fo = +s.vfade_out || 0;
+  const endf = [];
+  if (fi > 0) endf.push(`fade=t=in:st=0:d=${Math.min(fi, dur / 2).toFixed(3)}`);
+  if (fo > 0) endf.push(`fade=t=out:st=${Math.max(0, dur - Math.min(fo, dur / 2)).toFixed(3)}:d=${Math.min(fo, dur / 2).toFixed(3)}`);
+  if (Math.abs(speed - 1) > 1e-3) endf.push(`setpts=PTS/${speed.toFixed(4)}`);
+  endf.push("format=yuv420p");
+  fl.push(`${st.cur}${endf.join(",")}[vout]`);
 
   // audio: original track (optional) + any number of audio layers, mixed
   const fsec = Math.max(0.005, +(s.fade_sec ?? 0.15));
-  const fades = `afade=t=in:d=${fsec.toFixed(3)},afade=t=out:st=${Math.max(0, dur - fsec).toFixed(3)}:d=${fsec.toFixed(3)}`;
+  const fai = Math.max(fsec, Math.min(fi, dur / 2)), fao = Math.max(fsec, Math.min(fo, dur / 2));   // picture fade = sound fade
+  let fades = `afade=t=in:d=${fai.toFixed(3)},afade=t=out:st=${Math.max(0, dur - fao).toFixed(3)}:d=${fao.toFixed(3)}`;
+  if (Math.abs(speed - 1) > 1e-3) fades += "," + atempoChain(speed);
   let amap = ["-an"];
   const auds = [];
   for (const a0 of [...s.audios].sort(byLayer)) {
@@ -562,9 +702,9 @@ export async function buildCommand(movie, start, dur, out, sIn, info, { crop = n
     tmp.push(gp);
     cmd.push((await ffNewSyntax()) ? "-/filter_complex" : "-filter_complex_script", gp);
   } else cmd.push("-filter_complex", graph);
-  cmd.push("-map", "[vout]", ...amap, "-t", dur.toFixed(3),
+  cmd.push("-map", "[vout]", ...amap, "-t", (dur / speed).toFixed(3),
     ...encoderArgs(s, codec), "-movflags", "+faststart", "-f", "mp4", out);
-  return { cmd, tmp, dur, OW, OH };
+  return { cmd, tmp, dur: dur / speed, OW, OH };
 }
 
 // video bitrate (kbps) of a finished file, 0 when unknown
