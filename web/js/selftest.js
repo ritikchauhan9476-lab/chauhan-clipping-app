@@ -6,6 +6,8 @@ import * as D from "./dialogue.js";
 
 const log = (m) => console.log("SELFTEST " + m);
 
+const RUN_ID = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
 export async function runSelfTest(app) {
   if (globalThis.__selftestStarted) return;      // started twice (page events): two runs would write the same files
   globalThis.__selftestStarted = true;
@@ -26,7 +28,8 @@ export async function runSelfTest(app) {
     const info = await E.probeInfo(src);
     log(`probe ${info.w}x${info.h} ${info.duration.toFixed(1)}s audio=${info.has_audio}`);
     for (const codec of [E.CODECS[0], "H.264 (CPU)"]) {
-      const out = E.join(cache, `selftest_out_${codec.includes("CPU") ? "cpu" : "hw"}.mp4`);
+      // a unique name per run: the page can be started twice by the activity, and two runs must not share a file
+      const out = E.join(cache, `selftest_out_${codec.includes("CPU") ? "cpu" : "hw"}_${RUN_ID}.mp4`);
       const s = E.sanitize({ aspect: "9:16", fit_mode: "Blur background", resolution: "480p", codec, quality: "Fast (phone)", bitrate: 3000,
         exposure: 0.2, warmth: 0.3, vignette: 0.3, clarity: 0.3, texts: [{ text: "Part 1 नमस्ते", start: 0, end: 0, hcenter: true, vcenter: true }] });
       const r = new E.Runner(s, (m) => log("  " + m), null, null, cache);
