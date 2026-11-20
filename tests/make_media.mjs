@@ -3,8 +3,26 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+// a dual / triple audio movie like the ones MKVToolNix is used for: 3 audio languages + a subtitle
+export function makeLangMovie(dir) {
+  const out = path.join(dir, "movie_langs.mkv");
+  if (fs.existsSync(out)) return out;
+  const srt = path.join(dir, "subs.srt");
+  fs.writeFileSync(srt, "1\n00:00:01,000 --> 00:00:03,000\nHello\n");
+  execFileSync("ffmpeg", ["-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25:duration=12",
+    "-f", "lavfi", "-i", "sine=frequency=300:duration=12", "-f", "lavfi", "-i", "sine=frequency=500:duration=12",
+    "-f", "lavfi", "-i", "sine=frequency=700:duration=12", "-i", srt,
+    "-map", "0:v", "-map", "1:a", "-map", "2:a", "-map", "3:a", "-map", "4:s",
+    "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-c:s", "srt",
+    "-metadata:s:a:0", "language=eng", "-metadata:s:a:1", "language=hin", "-metadata:s:a:1", "title=Hindi 5.1",
+    "-metadata:s:a:2", "language=tam", "-metadata:s:s:0", "language=eng", "-disposition:a:0", "default", out]);
+  fs.unlinkSync(srt);
+  return out;
+}
+
 export function makeMedia(dir, seconds = 240) {
   fs.mkdirSync(dir, { recursive: true });
+  try { makeLangMovie(dir); } catch (e) { /* only for the track tool test */ }
   const movie = path.join(dir, "movie_talk.mp4");
   if (fs.existsSync(movie)) return { movie, image: path.join(dir, "logo.png"), music: path.join(dir, "music.m4a"), schedule: JSON.parse(fs.readFileSync(path.join(dir, "schedule.json"))) };
   const sr = 16000, n = sr * seconds;

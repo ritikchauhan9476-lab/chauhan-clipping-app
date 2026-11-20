@@ -57,7 +57,7 @@ def main():
         V = view(page, "simple")
         V.get_by_role("button", name="Choose video").click()
         page.wait_for_selector(".media-item")
-        page.locator(".media-item").first.click()
+        page.locator(".media-item", has_text="movie_talk").first.click()
         page.wait_for_function("() => { const m = document.querySelector('section.view.on .stage-msg'); return m && m.hidden; }", timeout=60000)
         shot(page, "02_movie")
         # parts
@@ -235,12 +235,31 @@ def main():
         assert "Continuing from" in alog, alog[-600:]
         print("auto short numbers:", nums, "first run:", first)
         assert nums == list(range(1, len(nums) + 1)) and len(nums) >= 3, nums
+        # audio track tool (like MKVToolNix): a movie with 3 languages -> keep only Hindi
+        page.locator(".navbtn", has_text="Simple Edit").click()
+        V.get_by_role("button", name="Choose video").click()
+        page.wait_for_selector(".media-item")
+        page.locator(".media-item", has_text="movie_langs").first.click()
+        page.wait_for_function("() => { const b = document.querySelector('section.view[data-tab=simple] .moviebar .btn.hot'); return b && !b.hidden; }", timeout=60000)
+        assert "Hindi" in V.locator(".moviebar .btn.hot").inner_text()
+        V.locator(".moviebar .btn.hot").click()
+        page.wait_for_selector(".modal .track")
+        assert page.locator(".modal .track").count() == 5      # video, 3 audio, 1 subtitle
+        page.locator(".modal .btn", has_text="Only Hindi").click()
+        shot(page, "16_tracks")
+        page.locator(".modal .btn", has_text="MAKE NEW FILE").click()
+        page.wait_for_selector(".modal .btn:has-text('Use the new file')", timeout=120000)
+        page.locator(".modal .btn", has_text="Use the new file").click()
+        time.sleep(2)
+        mv = page.evaluate("() => window.ccApp.simple.movie")
+        assert mv.endswith("movie_langs_hin.mkv"), mv
+        shot(page, "17_new_file")
         # timeline
         page.locator(".navbtn", has_text="Timeline").click()
         T = view(page, "timeline")
         T.get_by_role("button", name="Choose video").click()
         page.wait_for_selector(".media-item")
-        page.locator(".media-item").first.click()
+        page.locator(".media-item", has_text="movie_talk").first.click()
         time.sleep(3)
         T.locator(".chip", has_text="Add").click()
         T.get_by_role("button", name="+ Text").click()

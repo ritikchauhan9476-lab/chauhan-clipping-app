@@ -10,7 +10,8 @@ import * as D from "../web/js/dialogue.js";
 import * as A from "../web/js/autoshort.js";
 import * as CL from "../web/js/colour.js";
 import { nodeBridge } from "./nodebridge.mjs";
-import { makeMedia } from "./make_media.mjs";
+import { makeMedia, makeLangMovie } from "./make_media.mjs";
+import * as TR from "../web/js/tracks.js";
 
 const ROOT = process.env.CC_TEST_DIR || "/tmp/cc-test";
 const B = nodeBridge({ root: ROOT });
@@ -101,6 +102,45 @@ await test("app port: rotate, flip, free crop, speed 2x, fades, effects + every 
   assert.equal(A2.steps.length, 4);
   assert.equal(E.stripColors("x {c=#ff0000}y{/c} z"), "x y z");
   assert.deepEqual(E.colorLines("a {c=#FF0000}b{/c}\nc", "#FFFFFF"), [[["a ", "#FFFFFF"], ["b", "#FF0000"]], [["c", "#FFFFFF"]]]);
+});
+
+await test("audio track tool: remove languages, choose the default (MKV and MP4)", async () => {
+  const mkv = makeLangMovie(path.join(ROOT, "media"));
+  const ti = await TR.probeTracks(mkv);
+  const auds = ti.tracks.filter((t) => t.type === "audio");
+  assert.deepEqual(auds.map((t) => t.lang), ["eng", "hin", "tam"]);
+  assert.equal(TR.langName("hin"), "Hindi");
+  const hin = auds[1].index;
+  // keep video + Hindi + Tamil + subtitle; Hindi is the default -> it must become the FIRST audio track
+  const keep = new Set(ti.tracks.filter((t) => !(t.type === "audio" && t.lang === "eng")).map((t) => t.index));
+  const out = TR.outName(mkv, paths.out, auds.filter((a) => keep.has(a.index)));
+  assert.ok(out.endsWith("movie_langs_hin-tam.mkv"), out);
+  let last = 0;
+  await TR.remux(mkv, out, ti.tracks, keep, hin, (f) => { last = f; }, null, ti.duration);
+  assert.equal(last, 1);
+  const o = await TR.probeTracks(out);
+  const oa = o.tracks.filter((t) => t.type === "audio");
+  assert.deepEqual(oa.map((t) => t.lang), ["hin", "tam"]);
+  assert.ok(oa[0].isDefault && !oa[1].isDefault, JSON.stringify(oa));
+  assert.equal(oa[0].title, "Hindi 5.1");
+  assert.equal(o.tracks.filter((t) => t.type === "subtitle").length, 1);
+  assert.ok(Math.abs(o.duration - ti.duration) < 0.5);
+  // the editor reads the new file (first audio = Hindi)
+  const inf = await E.probeInfo(out);
+  assert.ok(inf.has_audio && inf.w === 640);
+  // MP4 in -> MP4 out; an SRT subtitle cannot go into MP4 and is left out (reported)
+  const mp4in = path.join(paths.cache, "langs.mp4");
+  execFileSync("ffmpeg", ["-y", "-v", "error", "-i", mkv, "-map", "0:v", "-map", "0:a", "-c", "copy", mp4in]);
+  const tm = await TR.probeTracks(mp4in);
+  const am = tm.tracks.filter((t) => t.type === "audio");
+  const keep2 = new Set(tm.tracks.filter((t) => t.type === "video" || t.lang === "tam").map((t) => t.index));
+  const out2 = TR.outName(mp4in, paths.out, am.filter((a) => keep2.has(a.index)));
+  assert.ok(out2.endsWith("langs_tam.mp4"), out2);
+  await TR.remux(mp4in, out2, tm.tracks, keep2, am[2].index, () => {}, null, tm.duration);
+  const o2 = await TR.probeTracks(out2);
+  assert.deepEqual(o2.tracks.filter((t) => t.type === "audio").map((t) => t.lang), ["tam"]);
+  const r = TR.remuxArgs(mkv, path.join(paths.out, "x.mp4"), ti.tracks, new Set(ti.tracks.map((t) => t.index)), hin);
+  assert.equal(r.dropped, 1);   // the SRT subtitle
 });
 
 await test("CapCut max preset: 1080p, 60 fps, 50 Mbps really comes out", async () => {

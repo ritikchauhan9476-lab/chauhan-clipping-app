@@ -147,3 +147,9 @@ input[type=range] { width: 100%; accent-color: var(--neon); height: 28px; }
 .cd-hint { font-size: 12px; color: var(--grey); text-align: center; padding: 0 12px; }
 .cd-hud { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); background: rgba(0,0,0,.72); color: var(--neon); border: 1px solid var(--neon); border-radius: 999px; padding: 4px 14px; font-weight: 700; pointer-events: none; opacity: 0; transition: opacity .15s; white-space: nowrap; }
 .cd-hud.show { opacity: 1; }
+.moviebar .btn.hot { border-color: var(--neon, #39FF14); color: var(--neon, #39FF14); }
+.moviebar .btn.small { margin-top: 4px; max-width: 100%; white-space: normal; text-align: left; }
+.tracks { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.track { border: 1px solid #333; border-radius: 10px; padding: 8px 10px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
+.track.off { opacity: 0.5; }
+.track .chk.small { font-size: 13px; }

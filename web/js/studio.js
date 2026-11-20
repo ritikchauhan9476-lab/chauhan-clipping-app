@@ -7,6 +7,7 @@ import * as D from "./dialogue.js";
 import * as P from "./preview.js";
 import { AIEngine } from "./ai.js";
 import { relativeItems } from "./autoshort.js";
+import { openTrackTool, probeTracks, langName } from "./tracks.js";
 import { FONTS } from "./textrender.js";
 import { bridge } from "./bridge.js";
 import { chooseMedia, playFile, showOutputs, resultRow } from "./files.js";
@@ -80,8 +81,10 @@ export class Studio {
     this.el = h("div", { class: "studio" });
     this.movieLbl = h("div", { class: "movie-name" }, "No movie loaded");
     this.movieInfo = h("div", { class: "note" }, "");
+    this.tracksBtn = button("Audio tracks", () => this.trackTool(), "small quiet");
+    this.tracksBtn.hidden = true;
     const top = h("div", { class: "moviebar" },
-      h("div", { class: "grow" }, this.movieLbl, this.movieInfo),
+      h("div", { class: "grow" }, this.movieLbl, this.movieInfo, this.tracksBtn),
       button("Choose video", () => this.chooseMovie(), "primary"));
     this.cv = h("canvas", { class: "preview-canvas", width: 640, height: 360 });
     this.ghost = h("div", { class: "ghost", hidden: true });
@@ -122,6 +125,13 @@ export class Studio {
     if (p) await this.loadMovie(p);
   }
 
+  // remove audio languages / subtitles (like MKVToolNix) and continue editing the new file (same timeline: parts stay)
+  async trackTool() {
+    if (!this.movie) return;
+    const out = await openTrackTool(this.movie, E.join(this.app.paths.out, "Audio tracks"));
+    if (out) { await this.loadMovie(out, true); this.app.changed(); toast("Now editing the new file"); }
+  }
+
   async loadMovie(path, keep = false) {
     let info;
     try { info = await E.probeInfo(path); } catch (e) { await alertBox("This video could not be opened:\n" + (e.message || e)); return false; }
@@ -134,6 +144,15 @@ export class Studio {
     }
     this.crop = null;
     E.detectCrop(path, this.dur).then((c) => { if (this.movie === path) { this.crop = c; this.scheduleRender(); } });
+    this.tracksBtn.hidden = true;
+    probeTracks(path).then((ti) => {               // several audio languages (dual audio movies): show the track tool
+      if (this.movie !== path) return;
+      const a = ti.tracks.filter((t) => t.type === "audio");
+      this.tracksBtn.hidden = false;
+      this.tracksBtn.textContent = a.length > 1 ? `Audio tracks (${a.length}): ${[...new Set(a.map((t) => langName(t.lang)))].join(", ")}` : "Audio tracks";
+      if (a.length > 1) this.tracksBtn.classList.add("hot");
+      else this.tracksBtn.classList.remove("hot");
+    }).catch(() => {});
     this.selectPart(Math.min(this.partIdx, Math.max(0, this.parts.length - 1)), keep ? this.tRel : 0);
     this.showPanel(this.panel);
     this.app.onMovieChanged(this);
