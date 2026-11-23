@@ -523,6 +523,7 @@ class App(ctk.CTk):
         self.tabs.add("Timeline (advanced)")
         self.tabs.add("Auto Short")
         self.tabs.add("PeakCut (AI clips)")
+        self.tabs.add("AutoClip")
         self.simple = Studio(self.tabs.tab("Simple Edit"), self, "simple")
         self.simple.pack(fill="both", expand=True)
         self.ai = Studio(self.tabs.tab("AI Clipping"), self, "ai")
@@ -531,6 +532,9 @@ class App(ctk.CTk):
         import peakcut_ui
         self.peakcut = peakcut_ui.PeakCutFrame(self.tabs.tab("PeakCut (AI clips)"), self)
         self.peakcut.pack(fill="both", expand=True)
+        import autoclip_ui
+        self.autoclip = autoclip_ui.AutoClipFrame(self.tabs.tab("AutoClip"), self)
+        self.autoclip.pack(fill="both", expand=True)
         self.ai.pack(fill="both", expand=True)
         self.build_editor(self.tabs.tab("Timeline (advanced)"))
         self.tabs.set("Simple Edit")

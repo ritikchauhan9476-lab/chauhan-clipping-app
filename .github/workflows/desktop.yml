@@ -84,6 +84,17 @@ jobs:
           Get-ChildItem "$out\peakcut-data" -Exclude models | Remove-Item -Recurse -Force
           Remove-Item Env:PEAKCUT_DATA
 
+          # 7) AutoClip (MIT) desktop app, installed silently INTO the folder (its own tab). Current-user install, no admin.
+          $acNames = gh api repos/zhouxiaoka/autoclip/releases/latest --jq '.tag_name, (.assets[] | "\(.name) \(.size)")'
+          Write-Host $acNames
+          gh release download -R zhouxiaoka/autoclip -p "*x64-setup.exe" -O ac-setup.exe
+          if ($LASTEXITCODE -ne 0) { throw "AutoClip download failed" }
+          $acDir = "$out\autoclip"
+          $p = Start-Process -FilePath "$PWD\ac-setup.exe" -ArgumentList "/S /D=$acDir" -Wait -PassThru
+          Write-Host "AutoClip installer exit code $($p.ExitCode)"
+          Get-ChildItem $acDir | Select-Object Name, Length | Format-Table
+          if (-not (Get-ChildItem $acDir -Filter *.exe | Where-Object { $_.Name -notlike 'uninstall*' })) { throw "AutoClip install failed" }
+
           # 6) deno: the JavaScript runtime yt-dlp needs for YouTube
           gh release download -R denoland/deno -p deno-x86_64-pc-windows-msvc.zip -O deno.zip
           if ($LASTEXITCODE -ne 0) { throw "deno download failed" }
@@ -123,7 +134,7 @@ jobs:
           make_latest: false
           body: |
             Windows portable version. Download ChauhanClipping-Windows.zip, extract it to a short folder (C:\ChauhanClipping), double-click run.bat.
-            Includes PeakCut (AI clips from YouTube links, its own tab) with its speech model, the YouTube downloader and FFmpeg.
+            Includes PeakCut (AI clips, also from movies in fast parts) with its speech model, AutoClip (desktop app), the YouTube downloader and FFmpeg.
             Optional: ChauhanClipping-WhisperModel-small.zip - extract it into the same folder (AI Clipping / text editing offline).
           files: |
             dist/ChauhanClipping-Windows.zip

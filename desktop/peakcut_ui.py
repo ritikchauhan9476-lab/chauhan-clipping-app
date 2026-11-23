@@ -86,8 +86,11 @@ class PeakCutFrame(ctk.CTkFrame):
 
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=8, pady=4)
-        feats = ctk.CTkScrollableFrame(body, width=520, label_text="What PeakCut does")
+        feats = ctk.CTkScrollableFrame(body, width=540, label_text="Fast clips from a movie / downloaded video")
         feats.pack(side="left", fill="both", padx=(0, 8))
+        self.build_parts(feats)
+        ctk.CTkLabel(feats, text="WHAT PEAKCUT DOES", text_color=NEON, font=ctk.CTkFont(size=14, weight="bold"),
+                     anchor="w").pack(fill="x", padx=8, pady=(18, 0))
         for title, text in FEATURES:
             ctk.CTkLabel(feats, text=title, text_color=NEON, font=ctk.CTkFont(size=13, weight="bold"),
                          anchor="w").pack(fill="x", padx=8, pady=(8, 0))
@@ -111,6 +114,156 @@ class PeakCutFrame(ctk.CTkFrame):
         elif len(BASE) > 110:
             self.add(f"Note: this folder's path is long ({len(BASE)} characters). If PeakCut's speech model does "
                      "not load, move the whole ChauhanClipping folder to a short place like C:\\ChauhanClipping.")
+
+    # ------------------------------------------------------------------ fast: a movie in parts
+    def build_parts(self, f):
+        ctk.CTkLabel(f, text="The movie is cut into parts (copied, takes seconds) and every part goes to PeakCut on "
+                             "its own: the clips of part 1 are ready while part 2 is still being worked on. "
+                             "Clips appear in PeakCut (Open in browser).", text_color=GREY, wraplength=500,
+                     justify="left", anchor="w").pack(fill="x", padx=8, pady=(4, 6))
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(fill="x", padx=8, pady=2)
+        self.pmovie = tk.StringVar(value="")
+        self.pmenu = ctk.CTkOptionMenu(row, variable=self.pmovie, width=300, values=["(choose a movie)"],
+                                       dynamic_resizing=False)
+        self.pmenu.pack(side="left")
+        ctk.CTkButton(row, text="Browse...", width=80, command=self.p_browse).pack(side="left", padx=4)
+        ctk.CTkButton(row, text="YouTube link", width=100, command=self.p_link).pack(side="left")
+        self.p_paths = {}
+        self.p_refresh()
+        grid = ctk.CTkFrame(f, fg_color="transparent")
+        grid.pack(fill="x", padx=8, pady=4)
+        self.pv = {}
+        fields = (("Part length (min)", "part", "10"), ("From (min)", "from", "0"), ("To (min, empty = end)", "to", ""),
+                  ("Clips per part", "max_clips", "3"), ("Shortest clip (s)", "min_len", "15"),
+                  ("Longest clip (s)", "max_len", "60"))
+        for i, (label, key, val) in enumerate(fields):
+            ctk.CTkLabel(grid, text=label, text_color=TEXT, anchor="w").grid(row=i // 2, column=(i % 2) * 2, sticky="w",
+                                                                           padx=(0, 6), pady=2)
+            e = ctk.CTkEntry(grid, width=70)
+            e.insert(0, val)
+            e.grid(row=i // 2, column=(i % 2) * 2 + 1, sticky="w", padx=(0, 18), pady=2)
+            self.pv[key] = e
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(fill="x", padx=8, pady=2)
+        self.p_style = tk.StringVar(value="bounce")
+        self.p_layout = tk.StringVar(value="blur")
+        self.p_lang = tk.StringVar(value="en")
+        self.p_caps = tk.BooleanVar(value=True)
+        for label, var, vals in (("Captions", self.p_style, ["bounce", "clean", "hype"]),
+                                 ("Layout", self.p_layout, ["blur", "zoom", "crop", "left", "right", "fit", "split", "gameplay"]),
+                                 ("Speech", self.p_lang, ["en", "ar"])):
+            ctk.CTkLabel(row, text=label, text_color=TEXT).pack(side="left", padx=(0, 4))
+            ctk.CTkOptionMenu(row, variable=var, values=vals, width=92).pack(side="left", padx=(0, 10))
+        ctk.CTkCheckBox(f, text="Word-by-word captions on the clips", variable=self.p_caps, text_color=TEXT).pack(
+            anchor="w", padx=8, pady=2)
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(fill="x", padx=8, pady=6)
+        self.p_go = ctk.CTkButton(row, text="MAKE CLIPS PART BY PART", height=40,
+                                  font=ctk.CTkFont(size=13, weight="bold"), command=self.p_start)
+        self.p_go.pack(side="left")
+        self.p_stop = ctk.CTkButton(row, text="Stop", width=80, height=40, fg_color="#5A1A1A", hover_color="#7A2222",
+                                    state="disabled", command=self.p_stop_job)
+        self.p_stop.pack(side="left", padx=8)
+        self.p_list = ctk.CTkFrame(f, fg_color="transparent")
+        self.p_list.pack(fill="x", padx=8, pady=4)
+        self.p_rows = {}
+        self.pjob = None
+
+    def p_refresh(self):
+        self.p_paths = {os.path.basename(p): p for p in E.list_movies()}
+        names = list(self.p_paths) or ["(no movie in input_movies - Browse or YouTube link)"]
+        self.pmenu.configure(values=names)
+        if self.pmovie.get() not in self.p_paths:
+            self.pmovie.set(names[0])
+
+    def p_set_movie(self, path):
+        self.p_refresh()
+        self.p_paths[os.path.basename(path)] = path
+        self.pmovie.set(os.path.basename(path))
+
+    def p_browse(self):
+        from tkinter import filedialog
+        p = filedialog.askopenfilename(filetypes=[("Video", "*.mp4 *.mkv *.avi *.mov *.webm *.m4v *.ts")])
+        if p:
+            self.p_set_movie(p)
+
+    def p_link(self):
+        import ytdl
+        ytdl.ask_and_download(self, self.p_set_movie)
+
+    def _num(self, key, default):
+        try:
+            return float(str(self.pv[key].get()).replace(",", "."))
+        except ValueError:
+            return default
+
+    def p_start(self):
+        movie = self.p_paths.get(self.pmovie.get())
+        if not movie or not os.path.isfile(movie):
+            messagebox.showwarning("PeakCut", "Please choose a movie (Browse or YouTube link) first.")
+            return
+        if not (self.proc and self.proc.poll() is None and port_open(self.port or 0)):
+            self.start()
+            self.add("PeakCut is starting; the parts begin as soon as it is up.")
+        part = max(1.0, self._num("part", 10)) * 60
+        a = max(0.0, self._num("from", 0)) * 60
+        to = str(self.pv["to"].get()).strip()
+        b = self._num("to", 0) * 60 if to else None
+        opts = dict(max_clips=int(self._num("max_clips", 3)), min_len=int(self._num("min_len", 15)),
+                    max_len=int(self._num("max_len", 60)), style=self.p_style.get(), layout=self.p_layout.get(),
+                    lang=self.p_lang.get(), captions=bool(self.p_caps.get()))
+        for w in self.p_list.winfo_children():
+            w.destroy()
+        self.p_rows = {}
+        self.p_go.configure(state="disabled")
+        self.p_stop.configure(state="normal")
+        self.p_run(movie, part, opts, a, b)
+
+    def p_run(self, movie, part_sec, opts, a=0.0, b=None):
+        """Also used by the self check (part_sec in seconds)."""
+        import pk_parts
+
+        def work():
+            t0 = time.time()
+            while not (self.port and port_open(self.port)):
+                if time.time() - t0 > 240 or not (self.proc and self.proc.poll() is None):
+                    self.q.put("Parts: PeakCut did not start.\n")
+                    self.after(0, self.p_done)
+                    return
+                time.sleep(1)
+            self.pjob = pk_parts.PartsJob(f"http://127.0.0.1:{self.port}", movie, part_sec, opts,
+                                          lambda m: self.q.put("Parts: " + m + "\n"),
+                                          lambda i, p: self.after(0, lambda i=i, p=dict(p): self.p_show(i, p)),
+                                          start=a, end=b)
+            try:
+                self.p_made = self.pjob.run()
+            except Exception as e:
+                self.q.put(f"Parts: stopped with an error: {e}\n")
+            self.after(0, self.p_done)
+        self.p_made = 0
+        threading.Thread(target=work, daemon=True).start()
+
+    def p_show(self, i, p):
+        import pk_parts
+        txt = (f"Part {i + 1}  {pk_parts.mmss(p['a'])}-{pk_parts.mmss(p['b'])}:  {p['state']}"
+               + (f"  {round(p['progress'] * 100)}%" if p["state"] == "working" else "")
+               + (f"  -  {p['clips']} clip(s)" if p["clips"] else "") + (f"  ({p['stage'][:60]})" if p["stage"] else ""))
+        lab = self.p_rows.get(i)
+        if lab is None:
+            lab = ctk.CTkLabel(self.p_list, text="", anchor="w", text_color=TEXT)
+            lab.pack(fill="x")
+            self.p_rows[i] = lab
+        lab.configure(text=txt, text_color=NEON if p["state"] == "done" else "#FF6B6B" if p["state"] == "error" else TEXT)
+
+    def p_stop_job(self):
+        if self.pjob:
+            self.pjob.stop_flag.set()
+
+    def p_done(self):
+        self.p_go.configure(state="normal")
+        self.p_stop.configure(state="disabled")
+        self.pjob_finished = True
 
     def add(self, line):
         try:

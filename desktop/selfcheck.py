@@ -517,6 +517,57 @@ def E_NOWIN():
     return E.NOWIN
 
 
+def t_peakcut_parts():
+    """A movie in parts: part 1 is cut, sent and finished by PeakCut while part 2 waits / works."""
+    import time
+    import app as A
+    import peakcut_ui as PK
+    import pk_parts
+    assert pk_parts.plan_parts(1000, 300) == [(0.0, 300.0), (300.0, 600.0), (600.0, 1000.0)]
+    assert pk_parts.plan_parts(1000, 300, 100, 400) == [(100, 400)]
+    long_movie = os.path.join(tmp, "long_talk.mp4")
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-stream_loop", "4", "-i", movie, "-c", "copy",
+                    long_movie], check=True)
+    w = A.App()
+    w.update()
+    pk = w.peakcut
+    PK.webbrowser.open = lambda url: None
+    pk.start()
+    pk.pjob_finished = False
+    pk.p_run(long_movie, 30, dict(max_clips=2, min_len=5, max_len=20, captions=True))
+    t0 = time.time()
+    while time.time() - t0 < 900 and not pk.pjob_finished:
+        w.update()
+        time.sleep(0.2)
+    log = pk.log.get("1.0", "end")
+    parts = pk.pjob.parts if pk.pjob else []
+    pk.stop()
+    w.update()
+    w.destroy()
+    assert pk.pjob_finished, "parts did not finish:\n" + log[-1500:]
+    assert len(parts) == 2, parts
+    states = [p["state"] for p in parts]
+    assert all(s == "done" for s in states), (states, [p["stage"] for p in parts], log[-1500:])
+    return f"2 parts of 30 s sent one by one, both done; clips per part: {[p['clips'] for p in parts]}"
+
+
+def t_autoclip():
+    """AutoClip is installed in the folder and its window starts."""
+    import time
+    import autoclip_ui as AC
+    exe = AC.exe_path()
+    assert exe, "autoclip folder / exe missing"
+    p = subprocess.Popen([exe], cwd=AC.AC_DIR)
+    time.sleep(20)
+    alive = p.poll() is None
+    try:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)
+    except Exception:
+        p.kill()
+    assert alive, f"AutoClip closed by itself (code {p.returncode})"
+    return f"{os.path.basename(exe)} starts and keeps running ({sum(1 for _ in os.scandir(AC.AC_DIR))} items in autoclip)"
+
+
 def t_youtube():
     """yt-dlp + deno are in the folder. A real YouTube download is tried; YouTube often blocks cloud machines, so a
     refusal there is only reported."""
@@ -629,6 +680,8 @@ step("CapCut text options (styles, effects, animations)", t_capcut_text)
 step("pro edit (rotate, crop, speed, effects) + live player", t_pro_edit_and_player)
 step("PeakCut tab (server, pages, ffmpeg, speech model)", t_peakcut)
 step("YouTube link download (yt-dlp + deno)", t_youtube)
+step("PeakCut on a movie in fast parts", t_peakcut_parts)
+step("AutoClip tab (installed app starts)", t_autoclip)
 step("silence cut, one part at a time (AI Clipping)", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)
 step("400 pieces in one clip (long filter graph)", t_many_pieces)
