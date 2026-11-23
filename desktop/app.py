@@ -522,11 +522,15 @@ class App(ctk.CTk):
         self.tabs.add("AI Clipping")
         self.tabs.add("Timeline (advanced)")
         self.tabs.add("Auto Short")
+        self.tabs.add("PeakCut (AI clips)")
         self.simple = Studio(self.tabs.tab("Simple Edit"), self, "simple")
         self.simple.pack(fill="both", expand=True)
         self.ai = Studio(self.tabs.tab("AI Clipping"), self, "ai")
         self.auto_short = AutoShortFrame(self.tabs.tab("Auto Short"), self, self.simple)
         self.auto_short.pack(fill="both", expand=True)
+        import peakcut_ui
+        self.peakcut = peakcut_ui.PeakCutFrame(self.tabs.tab("PeakCut (AI clips)"), self)
+        self.peakcut.pack(fill="both", expand=True)
         self.ai.pack(fill="both", expand=True)
         self.build_editor(self.tabs.tab("Timeline (advanced)"))
         self.tabs.set("Simple Edit")
@@ -1323,7 +1327,7 @@ class App(ctk.CTk):
         except Exception:
             self.report_error("Saving before closing")
         try:
-            for tab in (self.simple, self.ai):
+            for tab in (self.simple, self.ai, self.peakcut):
                 tab.on_close_cleanup()
             E.save_settings(self.sync_vars())
         finally:

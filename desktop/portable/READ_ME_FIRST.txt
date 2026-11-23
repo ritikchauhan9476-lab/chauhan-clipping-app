@@ -14,3 +14,14 @@ internet the first time you use AI Clipping / text editing.
 Projects are saved in the "projects" folder, exported videos in "exported_clips".
 To update to a newer version later, replace only the .py files - or just extract the new zip over this folder.
 run_check.bat = checks that everything works (optional).
+
+NEW: PEAKCUT TAB (AI clips from YouTube links and movies)
+- Put this folder in a SHORT place, for example C:\ChauhanClipping (Windows cannot load PeakCut's speech
+  library from very long folder paths).
+- Open the "PeakCut (AI clips)" tab and press START PEAKCUT. It opens in your web browser.
+- First time: in PeakCut go to Settings, AI, choose a service, paste your key, press "Save and test".
+  Without a key PeakCut still makes clips (it picks the loudest moments).
+- Everything is included: the speech model, FFmpeg, the YouTube downloader. Nothing to install.
+
+NEW: "YouTube link" button (Simple Edit / AI Clipping)
+- Paste a YouTube / Instagram / Facebook / X link, the video is downloaded into input_movies and opened.

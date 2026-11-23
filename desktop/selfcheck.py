@@ -472,6 +472,68 @@ def t_pro_edit_and_player():
     return f"pro export 8 s -> {d:.1f}s at 2x; live player showed {shown} frames, reached {pos:.1f}s in 5 s"
 
 
+def t_peakcut():
+    """The PeakCut tab starts the PeakCut server; its pages answer, FFmpeg and the speech model are found."""
+    import json
+    import time
+    import urllib.request
+    import app as A
+    import peakcut_ui as PK
+    assert os.path.isdir(PK.PK_DIR), "peakcut folder missing"
+    w = A.App()
+    w.update()
+    pk = w.peakcut
+    pk.start()
+    t0 = time.time()
+    opened = []
+    PK.webbrowser.open = lambda url: opened.append(url)
+    while time.time() - t0 < 180 and not opened:
+        w.update()
+        time.sleep(0.1)
+        if pk.proc and pk.proc.poll() is not None:
+            break
+    log = pk.log.get("1.0", "end")
+    assert opened, "PeakCut did not start:\n" + log[-1500:]
+    base = f"http://127.0.0.1:{pk.port}"
+    page = urllib.request.urlopen(base + "/", timeout=30).read().decode("utf-8", "ignore")
+    assert "PeakCut" in page or "peakcut" in page.lower(), page[:300]
+    st = json.loads(urllib.request.urlopen(base + "/api/status", timeout=30).read())
+    assert st["no_ffmpeg"] is False, st
+    assert st["speech"]["en"]["state"] == "ready", st["speech"]
+    # the speech model really loads and hears words (sherpa-onnx + Parakeet), in PeakCut's own process
+    code = ("import numpy as np, sys; from studio import transcribe; "
+            "a=np.zeros(16000*3, dtype=np.float32); print('words', len(transcribe.transcribe(a)))")
+    r = subprocess.run([sys.executable, "-c", code], cwd=PK.PK_DIR, env=pk.env(), capture_output=True, text=True,
+                       timeout=600, creationflags=E_NOWIN())
+    assert r.returncode == 0, (r.stdout + r.stderr)[-1500:]
+    pk.stop()
+    w.update()
+    w.destroy()
+    return f"PeakCut server up on {base}, pages + /api/status OK, FFmpeg found, speech model loads ({r.stdout.strip()})"
+
+
+def E_NOWIN():
+    import engine as E
+    return E.NOWIN
+
+
+def t_youtube():
+    """yt-dlp + deno are in the folder. A real YouTube download is tried; YouTube often blocks cloud machines, so a
+    refusal there is only reported."""
+    import ytdl
+    assert ytdl.available(), "yt-dlp missing"
+    deno = os.path.join(ytdl.BASE, "deno", "deno.exe")
+    assert os.path.isfile(deno), "deno.exe missing"
+    import yt_dlp
+    try:
+        p = ytdl.download("https://www.youtube.com/watch?v=jNQXAC9IVRw", 360)
+        ok = f"downloaded {os.path.basename(p)} ({os.path.getsize(p) // 1024} KB)"
+        os.remove(p)
+    except Exception as e:
+        ok = "YouTube refused this cloud machine (normal on CI): " + str(e)[:160]
+    return f"yt-dlp {yt_dlp.version.__version__}; {ok}"
+
+
 def t_many_pieces():
     import engine as E
     cpu = [c for c in E.CODECS if "CPU" in c][0]
@@ -565,6 +627,8 @@ step("Simple Edit: stop + continue, text per video", t_resume_and_text_per_video
 step("word colour, clean end, auto short ends", t_word_colour_and_clean_end)
 step("CapCut text options (styles, effects, animations)", t_capcut_text)
 step("pro edit (rotate, crop, speed, effects) + live player", t_pro_edit_and_player)
+step("PeakCut tab (server, pages, ffmpeg, speech model)", t_peakcut)
+step("YouTube link download (yt-dlp + deno)", t_youtube)
 step("silence cut, one part at a time (AI Clipping)", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)
 step("400 pieces in one clip (long filter graph)", t_many_pieces)

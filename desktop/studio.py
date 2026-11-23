@@ -104,6 +104,7 @@ class Studio(ctk.CTkFrame):
         self.movie_menu = ctk.CTkOptionMenu(top, values=["(no movie)"], width=340, command=self.on_movie_choice)
         self.movie_menu.pack(side="left", padx=4, pady=8)
         ctk.CTkButton(top, text="Browse...", width=90, command=self.browse).pack(side="left", padx=4)
+        ctk.CTkButton(top, text="YouTube link", width=100, command=self.from_link).pack(side="left", padx=4)
         ctk.CTkButton(top, text="Refresh", width=80, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
                       command=self.refresh_movies).pack(side="left", padx=4)
         self.info_lbl = ctk.CTkLabel(top, text="No movie loaded", text_color=GREY)
@@ -761,6 +762,15 @@ class Studio(ctk.CTkFrame):
         self.movie_menu.configure(values=names)
         if self.movie:
             self.movie_menu.set(os.path.basename(self.movie))
+
+    def from_link(self):
+        """Download a YouTube (Instagram, Facebook, X ...) video into input_movies and open it."""
+        import ytdl
+
+        def done(path):
+            self.refresh_movies()
+            self.load_movie(path)
+        ytdl.ask_and_download(self, done)
 
     def browse(self):
         p = filedialog.askopenfilename(filetypes=[("Video", "*.mp4 *.mkv *.avi *.mov *.wmv *.webm *.m4v *.ts")])

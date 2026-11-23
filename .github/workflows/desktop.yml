@@ -66,7 +66,31 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Whisper model download failed" }
           Get-ChildItem "$out\models\whisper-small" | Select-Object Name, Length | Format-Table
 
-      - name: Self check (window, switches, export, Silero, Whisper)
+          # 5) PeakCut (MIT licence): AI clips from YouTube links / movies - its own tab. Pinned to one version.
+          git clone -q https://github.com/haziqahmedqasmi/PeakCut.git pk
+          git -C pk checkout -q 39c32a878648619e981b57af608ba4571a82247f
+          if ($LASTEXITCODE -ne 0) { throw "PeakCut checkout failed" }
+          New-Item -ItemType Directory -Force "$out\peakcut" | Out-Null
+          foreach ($d in 'studio','web','LICENSE','README.md','.env.example') { Copy-Item "pk\$d" "$out\peakcut\" -Recurse }
+          & $py -m pip install --no-warn-script-location fastapi httpx python-multipart sherpa-onnx soundfile SQLAlchemy uvicorn "yt-dlp[default]"
+          if ($LASTEXITCODE -ne 0) { throw "PeakCut packages failed" }
+          # its English speech model, included so nothing is downloaded at the first start
+          $env:PEAKCUT_DATA = "$out\peakcut-data"
+          Push-Location "$out\peakcut"
+          & $py -m studio.fetch_model
+          $fm = $LASTEXITCODE
+          Pop-Location
+          if ($fm -ne 0) { throw "PeakCut speech model download failed" }
+          Get-ChildItem "$out\peakcut-data" -Exclude models | Remove-Item -Recurse -Force
+          Remove-Item Env:PEAKCUT_DATA
+
+          # 6) deno: the JavaScript runtime yt-dlp needs for YouTube
+          gh release download -R denoland/deno -p deno-x86_64-pc-windows-msvc.zip -O deno.zip
+          if ($LASTEXITCODE -ne 0) { throw "deno download failed" }
+          Expand-Archive deno.zip "$out\deno" -Force
+          & "$out\deno\deno.exe" --version
+
+      - name: Self check (window, switches, export, Silero, Whisper, PeakCut, YouTube)
         shell: pwsh
         run: |
           $out = "$PWD\dist\ChauhanClipping"
@@ -84,6 +108,8 @@ jobs:
           New-Item -ItemType Directory -Force "$PWD\dist\pack\ChauhanClipping" | Out-Null
           Move-Item "$PWD\dist\models_tmp" "$PWD\dist\pack\ChauhanClipping\models"
           Set-Location dist
+          Get-ChildItem "$out\peakcut-data" -Exclude models -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+          Remove-Item "$out\input_movies\*" -Recurse -Force -ErrorAction SilentlyContinue
           7z a -tzip -mx=3 "ChauhanClipping-Windows.zip" ChauhanClipping | Out-Null
           Set-Location pack
           7z a -tzip -mx=1 "..\ChauhanClipping-WhisperModel-small.zip" ChauhanClipping | Out-Null
@@ -96,7 +122,8 @@ jobs:
           name: Chauhan Clipping for Windows (portable) ${{ github.run_number }}
           make_latest: false
           body: |
-            Windows portable version. Download ChauhanClipping-Windows.zip, extract it, double-click run.bat.
+            Windows portable version. Download ChauhanClipping-Windows.zip, extract it to a short folder (C:\ChauhanClipping), double-click run.bat.
+            Includes PeakCut (AI clips from YouTube links, its own tab) with its speech model, the YouTube downloader and FFmpeg.
             Optional: ChauhanClipping-WhisperModel-small.zip - extract it into the same folder (AI Clipping / text editing offline).
           files: |
             dist/ChauhanClipping-Windows.zip
