@@ -58,6 +58,7 @@ class PeakCutFrame(ctk.CTkFrame):
         self.proc = None
         self.port = None
         self.q = queue.Queue()
+        self.pq = queue.Queue()            # part updates from the worker thread (tkinter only in the UI thread)
         self.build()
         self.after(200, self.poll)
 
@@ -229,18 +230,18 @@ class PeakCutFrame(ctk.CTkFrame):
             while not (self.port and port_open(self.port)):
                 if time.time() - t0 > 240 or not (self.proc and self.proc.poll() is None):
                     self.q.put("Parts: PeakCut did not start.\n")
-                    self.after(0, self.p_done)
+                    self.pq.put(("done",))
                     return
                 time.sleep(1)
             self.pjob = pk_parts.PartsJob(f"http://127.0.0.1:{self.port}", movie, part_sec, opts,
                                           lambda m: self.q.put("Parts: " + m + "\n"),
-                                          lambda i, p: self.after(0, lambda i=i, p=dict(p): self.p_show(i, p)),
+                                          lambda i, p: self.pq.put(("part", i, dict(p))),
                                           start=a, end=b)
             try:
                 self.p_made = self.pjob.run()
             except Exception as e:
                 self.q.put(f"Parts: stopped with an error: {e}\n")
-            self.after(0, self.p_done)
+            self.pq.put(("done",))
         self.p_made = 0
         threading.Thread(target=work, daemon=True).start()
 
@@ -324,6 +325,15 @@ class PeakCutFrame(ctk.CTkFrame):
                     self.stopping = False
                 else:
                     self.add(line)
+        except queue.Empty:
+            pass
+        try:
+            while True:
+                m = self.pq.get_nowait()
+                if m[0] == "part":
+                    self.p_show(m[1], m[2])
+                else:
+                    self.p_done()
         except queue.Empty:
             pass
         if self.proc and self.proc.poll() is None and not getattr(self, "opened", True):
