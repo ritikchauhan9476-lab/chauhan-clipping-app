@@ -523,7 +523,8 @@ def t_peakcut_parts():
     import app as A
     import peakcut_ui as PK
     import pk_parts
-    assert pk_parts.plan_parts(1000, 300) == [(0.0, 300.0), (300.0, 600.0), (600.0, 1000.0)]
+    assert pk_parts.plan_parts(1000, 300) == [(0.0, 300.0), (300.0, 600.0), (600.0, 900.0), (900.0, 1000)]
+    assert pk_parts.plan_parts(950, 300)[-1] == (600.0, 950)          # a tiny last bit joins the part before
     assert pk_parts.plan_parts(1000, 300, 100, 400) == [(100, 400)]
     long_movie = os.path.join(tmp, "long_talk.mp4")
     subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-stream_loop", "4", "-i", movie, "-c", "copy",
