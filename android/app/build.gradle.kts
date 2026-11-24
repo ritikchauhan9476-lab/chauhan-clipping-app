@@ -39,6 +39,7 @@ android {
     }
 
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true          // NewPipe Extractor (video links) uses newer Java APIs
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -61,4 +62,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.webkit:webkit:1.12.1")
+    // YouTube and other video links -> stream addresses (GPL-3.0, the library NewPipe uses)
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.27.1")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
 }

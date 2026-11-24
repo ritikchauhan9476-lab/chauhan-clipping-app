@@ -58,6 +58,18 @@ const api = {
   async openFile({ p }) { console.log("OPEN FILE", p); globalThis.lastOpened = p; return true; },
   async share({ p }) { console.log("SHARE", p); return true; },
   async openFolder({ p }) { console.log("OPEN FOLDER", p); return true; },
+  async http({ method, url, headers, body }) { return B.http(method, url, headers, body); },
+  async upload({ url, headers, fields, fileField, path: p, mime }) { return B.upload(url, headers, fields, fileField, p, mime); },
+  async linkInfo({ url }) { return B.linkInfo(url); },
+  async download({ id, url, out, headers }) {
+    const j = { got: 0, total: -1, done: false, result: null };
+    j.h = B.download(url, out, headers, (g, t) => { j.got = g; j.total = t; });
+    jobs.set(id, j);
+    j.h.done.then((r) => { j.done = true; j.result = r; });
+    return true;
+  },
+  async dlpoll({ id }) { const j = jobs.get(id); return j ? { got: j.got, total: j.total, done: j.done, result: j.result } : { done: true, result: { ok: false, error: "unknown" } }; },
+  async dlcancel({ id }) { const j = jobs.get(id); if (j) j.h.cancel(); return true; },
 };
 
 http.createServer(async (req, res) => {

@@ -7,11 +7,12 @@ import { renderTextPng } from "./textrender.js";
 import { Studio } from "./studio.js";
 import { TimelineTab } from "./timeline.js";
 import { AutoShortTab } from "./autoshort_ui.js";
+import { AIClipsTab } from "./aiclips_ui.js";
 import { chooseMedia } from "./files.js";
 import { h, clear, button, ask, alertBox, promptBox, sheet, toast, closeTop, checkField, note } from "./ui.js";
 
 const APP_NAME = "Chauhan Clipping";
-const TABS = [["simple", "Simple Edit", "✂"], ["ai", "AI Clipping", "✦"], ["timeline", "Timeline", "☰"], ["auto", "Auto Short", "⚡"]];
+const TABS = [["simple", "Simple Edit", "✂"], ["ai", "AI Clipping", "✦"], ["timeline", "Timeline", "☰"], ["auto", "Auto Short", "⚡"], ["clips", "AI Clips", "✪"]];
 
 class App {
   constructor() {
@@ -70,7 +71,8 @@ class App {
     this.ai = new Studio(this, "ai");
     this.timeline = new TimelineTab(this);
     this.auto = new AutoShortTab(this, this.simple);
-    this.views = { simple: this.simple, ai: this.ai, timeline: this.timeline, auto: this.auto };
+    this.clips = new AIClipsTab(this, this.simple);
+    this.views = { simple: this.simple, ai: this.ai, timeline: this.timeline, auto: this.auto, clips: this.clips };
     const main = h("main", { class: "views" });
     for (const [k] of TABS) { const v = h("section", { class: "view", "data-tab": k }, this.views[k].el); main.append(v); }
     this.nav = h("nav", { class: "bottomnav" }, ...TABS.map(([k, label, icon]) => h("button", { class: "navbtn", type: "button", "data-tab": k, onclick: () => this.setTab(k) }, h("span", { class: "ico" }, icon), h("span", {}, label))));
@@ -92,7 +94,7 @@ class App {
   changed() { /* the 3-second tick compares fingerprints */ }
 
   anyRunning() {
-    return !!(this.simple.eng || this.simple.aiEng || this.ai.eng || this.ai.aiEng || this.timeline.eng || this.auto.running);
+    return !!(this.simple.eng || this.simple.aiEng || this.ai.eng || this.ai.aiEng || this.timeline.eng || this.auto.running || (this.clips && this.clips.running));
   }
   async releaseAwake() {
     setTimeout(async () => { if (!this.anyRunning()) await bridge().keepAwake(false); }, 300);
@@ -118,8 +120,8 @@ class App {
 
   // ---------------------------------------------------------------- project state
   collectState() {
-    return { active_tab: { simple: "Simple Edit", ai: "AI Clipping", timeline: "Timeline (advanced)", auto: "Auto Short" }[this.active],
-      simple: this.simple.getState(), ai: this.ai.getState(), timeline: this.timeline.getState(), auto_short: this.auto.getState() };
+    return { active_tab: { simple: "Simple Edit", ai: "AI Clipping", timeline: "Timeline (advanced)", auto: "Auto Short", clips: "AI Clips" }[this.active],
+      simple: this.simple.getState(), ai: this.ai.getState(), timeline: this.timeline.getState(), auto_short: this.auto.getState(), ai_clips: this.clips.getState() };
   }
   static contentView(st) {
     const c = JSON.parse(JSON.stringify(st));
@@ -164,11 +166,12 @@ class App {
     }
     try { const tl = st.timeline || {}; await this.timeline.setState(tl, await this.resolveMovie(tl.movie || "", cache)); } catch (e) { problems.push(`timeline: ${e.message || e}`); }
     try { this.auto.setState(st.auto_short); await this.auto.refreshMovie(); } catch (e) { problems.push(`auto short tab: ${e.message || e}`); }
-    const tabKey = { "Simple Edit": "simple", "AI Clipping": "ai", "Timeline (advanced)": "timeline", "Auto Short": "auto" }[st.active_tab] || "simple";
+    try { this.clips.setState(st.ai_clips); } catch (e) { problems.push(`AI clips tab: ${e.message || e}`); }
+    const tabKey = { "Simple Edit": "simple", "AI Clipping": "ai", "Timeline (advanced)": "timeline", "Auto Short": "auto", "AI Clips": "clips" }[st.active_tab] || "simple";
     this.setTab(tabKey);
     return problems;
   }
-  blankState() { return { active_tab: "Simple Edit", simple: {}, ai: {}, timeline: {}, auto_short: {} }; }
+  blankState() { return { active_tab: "Simple Edit", simple: {}, ai: {}, timeline: {}, auto_short: {}, ai_clips: {} }; }
 
   async confirmDiscard() {
     const st = this.collectState();

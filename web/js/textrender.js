@@ -143,7 +143,13 @@ export function drawText(t0, W, H) {
 // engine.js calls this while it builds an export command
 export async function renderTextPng(t, OW, OH, tmpDir) {
   await ensureFont(t, Math.max(8, Math.floor((OH * +t.size) / 100)));
-  const { canvas, x, y } = drawText(t, OW, OH);
+  let { canvas, x, y } = drawText(t, OW, OH);
+  if (t._full) {                       // a whole transparent frame (caption tracks: every picture the same size)
+    const f = document.createElement("canvas");
+    f.width = OW; f.height = OH;
+    if (String(t.text || "").trim()) f.getContext("2d").drawImage(canvas, x, y);
+    canvas = f; x = 0; y = 0;
+  }
   const w = canvas.width, h = canvas.height;
   const url = canvas.toDataURL("image/png");
   const p = E.join(tmpDir, `text_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`);

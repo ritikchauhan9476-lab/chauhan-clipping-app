@@ -12,6 +12,9 @@ import * as CL from "../web/js/colour.js";
 import { nodeBridge } from "./nodebridge.mjs";
 import { makeMedia, makeLangMovie } from "./make_media.mjs";
 import * as TR from "../web/js/tracks.js";
+import * as AC from "../web/js/aiclips.js";
+import * as LD from "../web/js/linkdl.js";
+import http from "node:http";
 
 const ROOT = process.env.CC_TEST_DIR || "/tmp/cc-test";
 const B = nodeBridge({ root: ROOT });
@@ -29,8 +32,19 @@ function probe(p) {
 // fake text renderer: a solid PNG of the right-ish size (the app draws real text with the phone's fonts)
 const textPng = path.join(paths.cache, "fake_text.png");
 execFileSync("ffmpeg", ["-y", "-v", "error", "-f", "lavfi", "-i", "color=c=white:s=300x80", "-frames:v", "1", textPng]);
+const fullPngs = new Map();
 E.setTextRenderer(async (t, OW, OH) => {
   const p = path.join(paths.cache, `t_${Math.random().toString(36).slice(2)}.png`);
+  if (t._full) {                       // caption tracks: whole transparent frames with a white box
+    const key = `${OW}x${OH}`;
+    if (!fullPngs.has(key)) {
+      const fp = path.join(paths.cache, `full_${key}.png`);
+      execFileSync("ffmpeg", ["-y", "-v", "error", "-f", "lavfi", "-i", `color=c=black@0.0:s=${key},format=rgba,drawbox=x=${Math.round(OW * 0.2)}:y=${Math.round(OH * 0.7)}:w=${Math.round(OW * 0.6)}:h=${Math.round(OH * 0.06)}:color=white:t=fill`, "-frames:v", "1", fp]);
+      fullPngs.set(key, fp);
+    }
+    fs.copyFileSync(fullPngs.get(key), p);
+    return { path: p, x: 0, y: 0, w: OW, h: OH };
+  }
   fs.copyFileSync(textPng, p);
   return { path: p, x: (OW - 300) / 2, y: OH * 0.1 };
 });
@@ -141,6 +155,103 @@ await test("audio track tool: remove languages, choose the default (MKV and MP4)
   assert.deepEqual(o2.tracks.filter((t) => t.type === "audio").map((t) => t.lang), ["tam"]);
   const r = TR.remuxArgs(mkv, path.join(paths.out, "x.mp4"), ti.tracks, new Set(ti.tracks.map((t) => t.index)), hin);
   assert.equal(r.dropped, 1);   // the SRT subtitle
+});
+
+// a tiny stand-in for the AI services (OpenAI-compatible + Gemini), so the whole AI Clips path runs here
+function mockAI() {
+  const seen = { stt: 0, pick: 0, gemini_stt: 0, gemini_pick: 0 };
+  const words = (a, b) => { const w = []; for (let t = a; t < b; t += 0.4) w.push({ word: `w${Math.round(t * 10)}`, start: t, end: t + 0.35 }); return w; };
+  const segsOf = (ws) => { const out = []; for (let i = 0; i < ws.length; i += 12) { const g = ws.slice(i, i + 12); out.push({ start: g[0].start, end: g[g.length - 1].end, text: g.map((x) => x.word).join(" ") }); } return out; };
+  const clipsFor = (text) => {
+    const m = /inside (\d+)-(\d+)/.exec(text) || [0, 0, 120];
+    const a = +m[1];
+    return { clips: [{ start: a + 10, end: a + 32, score: 90, title: "Big moment", hook: "Wait for this", description: "A test clip.", hashtags: ["movie", "#clip"], reason: "test" },
+      { start: a + 50, end: a + 75, score: 70, title: "Second", hook: "", description: "", hashtags: [], reason: "" }] };
+  };
+  const srv = http.createServer((req, res) => {
+    let body = [];
+    req.on("data", (d) => body.push(d));
+    req.on("end", () => {
+      const txt = Buffer.concat(body).toString("latin1");
+      const send = (o) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
+      if (req.url.startsWith("/v1/audio/transcriptions")) {
+        seen.stt++;
+        assert.ok(/name="timestamp_granularities\[\]"\r\n\r\nword/.test(txt), "word timestamps asked");
+        const ws = words(0, 120);
+        return send({ text: "x", duration: 120, words: ws, segments: segsOf(ws) });
+      }
+      if (req.url.startsWith("/v1/chat/completions")) {
+        seen.pick++;
+        const j = JSON.parse(txt);
+        return send({ choices: [{ message: { content: JSON.stringify(clipsFor(j.messages[1].content)) } }] });
+      }
+      if (req.url.includes(":generateContent")) {
+        const j = JSON.parse(Buffer.concat(body).toString("utf8"));
+        const parts = j.contents[0].parts;
+        if (parts.some((p) => p.inline_data)) { seen.gemini_stt++; return send({ candidates: [{ content: { parts: [{ text: JSON.stringify({ segments: segsOf(words(0, 120)) }) }] } }] }); }
+        seen.gemini_pick++;
+        const out = parts[0].text.includes('{"ok": true}') ? { ok: true } : clipsFor(parts[0].text);
+        return send({ candidates: [{ content: { parts: [{ text: "```json\n" + JSON.stringify(out) + "\n```" }] } }] });
+      }
+      res.writeHead(404); res.end("{}");
+    });
+  });
+  return new Promise((r) => srv.listen(0, "127.0.0.1", () => r({ srv, seen, port: srv.address().port })));
+}
+
+await test("AI Clips: part by part, AI picks moments, word captions, hook, cover + post text (OpenAI-compatible and Gemini)", async () => {
+  const m = await mockAI();
+  try {
+    for (const [name, ai] of [["openai", { provider: "custom", base: `http://127.0.0.1:${m.port}/v1`, stt: "whisper-1", key: "k" }],
+      ["gemini", { provider: "gemini", base: `http://127.0.0.1:${m.port}/v1beta`, key: "k" }]]) {
+      const outDir = path.join(paths.out, "aiclips_" + name);
+      fs.rmSync(outDir, { recursive: true, force: true });
+      const s = E.sanitize({ codec: "H.264 (CPU)", quality: "Fast (phone)", resolution: "480p", fps: "Original", bitrate: 2000 });
+      const made = [];
+      const job = new AC.AIClipsJob({ movie: media.movie, settings: s, ai,
+        opts: { aspect: "9:16", fit: "Blur background", count: 2, min: 15, max: 40, partSec: 120, from: 0, to: 240, captions: true, style: "Bounce",
+          capPos: "Bottom", hook: true, boost: true, platformName: "TikTok", lang: "" },
+        outDir, tmpDir: paths.cache, log, onClip: (d) => made.push(d) });
+      await job.run();
+      assert.equal(made.length, 4, `${name}: 2 parts x 2 clips, got ${made.length}`);
+      const v = probe(made[0].path).streams.find((x) => x.codec_type === "video");
+      assert.ok(v.height > v.width, `${v.width}x${v.height}`);
+      assert.ok(Math.abs(made[0].length - (made[0].end - made[0].start)) < 0.01);
+      assert.ok(fs.existsSync(made[0].cover) && fs.statSync(made[0].cover).size > 1000, "cover");
+      const kit = fs.readFileSync(made[0].kit, "utf8");
+      assert.ok(kit.includes("Big moment") && kit.includes("#movie") && kit.includes("#clip"), kit);
+      assert.ok(made[2].start >= 120, "the second part's clips come from the second part: " + made[2].start);
+    }
+    assert.equal(m.seen.stt, 2); assert.equal(m.seen.pick, 2); assert.equal(m.seen.gemini_stt, 2); assert.equal(m.seen.gemini_pick, 2);
+    assert.ok(await AC.testKey({ provider: "gemini", base: `http://127.0.0.1:${m.port}/v1beta`, key: "k" }));
+  } finally { m.srv.close(); }
+  // captions: groups of words, the spoken word coloured
+  const ev = AC.captionEvents([{ word: "a", start: 10, end: 10.3 }, { word: "b", start: 10.4, end: 10.7 }, { word: "c", start: 10.8, end: 11 }, { word: "d", start: 11.2, end: 11.5 }], 10, 20, AC.CAPTION_STYLES.Bounce);
+  assert.equal(ev.length, 4);
+  assert.equal(ev[1].text, "A {c=#00F0FF}B{/c} C");
+  assert.equal(ev[3].text, "{c=#00F0FF}D{/c}");
+  // no key: still clips, by talking + loudness
+  const p = AC.pickByLoudness(new Float32Array(16000 * 100).map((_, i) => (i > 16000 * 40 && i < 16000 * 70 ? Math.sin(i / 7) * 0.5 : 0.001)), 16000, [[40, 70]], 0, 1, 20, 30);
+  assert.ok(p.length === 1 && p[0].start >= 35 && p[0].end <= 75, JSON.stringify(p));
+});
+
+await test("YouTube / video link download: streams chosen, picture + sound joined", async () => {
+  const v = path.join(paths.cache, "yt_v.mp4"), a = path.join(paths.cache, "yt_a.m4a");
+  execFileSync("ffmpeg", ["-y", "-v", "error", "-i", media.movie, "-t", "8", "-an", "-c:v", "copy", v]);
+  execFileSync("ffmpeg", ["-y", "-v", "error", "-i", media.movie, "-t", "8", "-vn", "-c:a", "aac", a]);
+  const info = { title: "Test: video / 1", duration: 8,
+    video: [{ url: "file://" + v, height: 360, fps: 25, ext: "mp4", codec: "avc1", videoOnly: true }, { url: "file://x", height: 2160, ext: "webm", codec: "vp9", videoOnly: true }],
+    audio: [{ url: "file://" + a, bitrate: 128, ext: "m4a", codec: "mp4a", type: "ORIGINAL" }] };
+  const pick = LD.chooseStreams(info, 1080);
+  assert.equal(pick.video.height, 360); assert.ok(pick.audio);
+  const mock = path.join(paths.cache, "link.json");
+  fs.writeFileSync(mock, JSON.stringify(info));
+  process.env.CC_LINK_MOCK = mock;
+  const d = await LD.downloadLink("https://www.youtube.com/watch?v=test", path.join(paths.out, "Downloads"), 1080, () => {});
+  const pr = probe(d.path);
+  assert.ok(d.path.endsWith("Test video 1 360p.mp4"), d.path);
+  assert.ok(pr.streams.some((x) => x.codec_type === "video") && pr.streams.some((x) => x.codec_type === "audio"));
+  delete process.env.CC_LINK_MOCK;
 });
 
 await test("CapCut max preset: 1080p, 60 fps, 50 Mbps really comes out", async () => {

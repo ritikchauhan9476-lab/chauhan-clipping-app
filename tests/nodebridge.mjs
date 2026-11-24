@@ -71,5 +71,44 @@ export function nodeBridge({ root = "/tmp/cc-test", ffmpeg = "ffmpeg", ffprobe =
     async appInfo() { return { version: "node" }; },
     async storageAccess() { return true; },
     async askStorage() { return true; },
+    // network: real HTTP (tests point the AI service at a small mock server), video links from a JSON file
+    async http(method, url, headers = {}, body = "") {
+      try {
+        const r = await fetch(url, { method, headers, body: method === "GET" ? undefined : body || undefined });
+        return { status: r.status, body: await r.text() };
+      } catch (e) { return { status: -1, error: String(e.message || e) }; }
+    },
+    async upload(url, headers, fields, fileField, p, mime) {
+      try {
+        const fd = new FormData();
+        for (const [k, v] of Object.entries(fields || {})) for (const x of Array.isArray(v) ? v : [v]) fd.append(k, String(x));
+        fd.append(fileField, new Blob([fs.readFileSync(p)], { type: mime }), path.basename(p));
+        const r = await fetch(url, { method: "POST", headers, body: fd });
+        return { status: r.status, body: await r.text() };
+      } catch (e) { return { status: -1, error: String(e.message || e) }; }
+    },
+    async linkInfo(url) {
+      const mock = process.env.CC_LINK_MOCK;
+      if (mock && fs.existsSync(mock)) return { ok: true, info: JSON.parse(fs.readFileSync(mock, "utf8")) };
+      return { ok: false, error: "no video-link service on this machine (" + url + ")" };
+    },
+    download(url, out, headers, onProgress) {
+      let stop = false;
+      const done = (async () => {
+        try {
+          if (url.startsWith("file://")) { fs.copyFileSync(decodeURIComponent(url.slice(7)), out); const n = fs.statSync(out).size; onProgress && onProgress(n, n); return { ok: true, size: n }; }
+          const r = await fetch(url, { headers });
+          if (!r.ok) return { ok: false, error: "HTTP " + r.status };
+          const total = +(r.headers.get("content-length") || -1);
+          fs.mkdirSync(path.dirname(out), { recursive: true });
+          const f = fs.openSync(out, "w");
+          let got = 0;
+          for await (const chunk of r.body) { if (stop) { fs.closeSync(f); fs.rmSync(out, { force: true }); return { ok: false, error: "stopped" }; } fs.writeSync(f, chunk); got += chunk.length; onProgress && onProgress(got, total); }
+          fs.closeSync(f);
+          return { ok: true, size: got };
+        } catch (e) { return { ok: false, error: String(e.message || e) }; }
+      })();
+      return { done, cancel: () => { stop = true; } };
+    },
   };
 }

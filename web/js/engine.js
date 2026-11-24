@@ -636,6 +636,36 @@ export async function buildCommand(movie, start, dur, out, sIn, info, { crop = n
     }
   }
 
+  // caption track (AI Clips): word-by-word captions as ONE input - full transparent frames shown one after another
+  const caps = s._captions && Array.isArray(s._captions.events) ? s._captions.events.filter((e) => e.t1 > e.t0 && e.t0 < dur) : [];
+  if (caps.length) {
+    if (!textRenderer) throw new Error("Text drawing is not ready.");
+    const base = { ...TEXT_DEFAULT, ...(s._captions.style || {}), _full: true };
+    const blank = await textRenderer({ ...base, text: " " }, OW, OH, tmpDir);
+    tmp.push(blank.path);
+    const lines = ["ffconcat version 1.0"];
+    const q = (p) => `file '${String(p).replace(/'/g, "'\\''")}'`;
+    let t = 0, last = blank.path;
+    for (const e of caps.sort((a, b) => a.t0 - b.t0)) {
+      const t0 = Math.max(t, e.t0), t1 = Math.min(dur, e.t1);
+      if (t1 - t0 < 0.02) continue;
+      if (t0 - t > 0.01) { lines.push(q(blank.path), `duration ${(t0 - t).toFixed(3)}`); }
+      const img = await textRenderer({ ...base, text: e.text }, OW, OH, tmpDir);
+      tmp.push(img.path);
+      lines.push(q(img.path), `duration ${(t1 - t0).toFixed(3)}`);
+      t = t1; last = img.path;
+    }
+    lines.push(q(blank.path), `duration ${Math.max(0.05, dur - t).toFixed(3)}`, q(blank.path));
+    const list = join(tmpDir, `captions_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.txt`);
+    await bridge().writeText(list, lines.join("\n") + "\n");
+    tmp.push(list);
+    const i = addInput(["-f", "concat", "-safe", "0", "-i", list]);
+    fl.push(`[${i}:v:0]format=yuva420p,setpts=PTS-STARTPTS[cap${i}]`);
+    const lab = newlab();
+    fl.push(`${st.cur}[cap${i}]overlay=0:0:eof_action=pass:repeatlast=0:format=auto${lab}`);
+    st.cur = lab;
+  }
+
   if (boost.bar && dur > 1) {                      // thin progress bar along the top: viewers stay to see it fill
     const bh = Math.max(4, Math.floor(Math.floor(OH / 200) / 2) * 2);
     fl.push(`color=c=0xFFD400:s=${OW}x${bh}:r=${fps},format=yuv420p[pbar]`);

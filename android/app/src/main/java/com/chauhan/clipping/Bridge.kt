@@ -94,8 +94,60 @@ class Bridge(private val act: MainActivity) {
         }
     }
 
+    // ------------------------------------------------------------------ network (Net.kt): AI services, video links
+    private val stops = ConcurrentHashMap<String, Boolean>()
+
+    @JavascriptInterface
+    fun http(id: String, method: String, url: String, headersJson: String, body: String) {
+        pool.execute {
+            val r = try { Net.http(method, url, if (headersJson.isEmpty()) null else JSONObject(headersJson), body.ifEmpty { null }) }
+                    catch (e: Throwable) { Net.error(e) }
+            cb(id, r)
+        }
+    }
+
+    @JavascriptInterface
+    fun upload(id: String, url: String, headersJson: String, fieldsJson: String, fileField: String, path: String, mime: String) {
+        pool.execute {
+            val r = try { Net.upload(url, if (headersJson.isEmpty()) null else JSONObject(headersJson), JSONObject(fieldsJson), fileField, path, mime) }
+                    catch (e: Throwable) { Net.error(e) }
+            cb(id, r)
+        }
+    }
+
+    @JavascriptInterface
+    fun linkInfo(id: String, url: String) {
+        pool.execute {
+            val r = try { JSONObject().put("ok", true).put("info", JSONObject(Net.linkInfo(url))).toString() }
+                    catch (e: Throwable) { JSONObject().put("ok", false).put("error", (e.message ?: e.toString()).take(600)).toString() }
+            cb(id, r)
+        }
+    }
+
+    @JavascriptInterface
+    fun download(id: String, url: String, out: String, headersJson: String) {
+        pool.execute {
+            var last = 0L
+            val r = try {
+                val n = Net.download(url, out, if (headersJson.isEmpty()) null else JSONObject(headersJson), { got, total ->
+                    val now = System.currentTimeMillis()
+                    if (now - last > 400) {
+                        last = now
+                        act.js("window.__bridgeLog&&window.__bridgeLog(${JSONObject.quote(id)},${JSONObject.quote("progress $got $total")})")
+                    }
+                }, { stops[id] == true })
+                JSONObject().put("ok", true).put("size", n).toString()
+            } catch (e: Throwable) {
+                try { File(out).delete() } catch (x: Exception) { }
+                JSONObject().put("ok", false).put("error", (e.message ?: e.toString()).take(400)).toString()
+            } finally { stops.remove(id) }
+            cb(id, r)
+        }
+    }
+
     @JavascriptInterface
     fun cancel(id: String) {
+        stops[id] = true
         val p = procs[id] ?: return
         try { p.destroy() } catch (e: Exception) { }
         pool.execute {

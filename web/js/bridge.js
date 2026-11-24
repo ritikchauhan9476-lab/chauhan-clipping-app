@@ -102,6 +102,14 @@ function androidBridge() {
     async appInfo() { return call("appInfo"); },
     async storageAccess() { return call("storageAccess"); },
     async askStorage() { const { done } = asyncCall("askStorage", null); return done; },
+    // network (no browser CORS limits): AI services, video links, downloads
+    async http(method, url, headers = {}, body = "") { const { done } = asyncCall("http", null, method, url, JSON.stringify(headers || {}), body || ""); return (await done) || { status: -1, error: "bridge" }; },
+    async upload(url, headers, fields, fileField, path, mime) { const { done } = asyncCall("upload", null, url, JSON.stringify(headers || {}), JSON.stringify(fields || {}), fileField, path, mime || "application/octet-stream"); return (await done) || { status: -1, error: "bridge" }; },
+    async linkInfo(url) { const { done } = asyncCall("linkInfo", null, url); return (await done) || { ok: false, error: "bridge" }; },
+    download(url, out, headers, onProgress) {
+      const { id, done } = asyncCall("download", (l) => { const m = /^progress (\d+) (-?\d+)/.exec(l); if (m && onProgress) onProgress(+m[1], +m[2]); }, url, out, JSON.stringify(headers || {}));
+      return { done: done.then((v) => v || { ok: false, error: "bridge" }), cancel: () => A.cancel(id) };
+    },
   };
 }
 
@@ -159,5 +167,21 @@ function devBridge() {
     async appInfo() { return { version: "dev", abi: "dev" }; },
     async storageAccess() { return true; },
     async askStorage() { return true; },
+    async http(method, url, headers = {}, body = "") { return post("http", { method, url, headers, body }); },
+    async upload(url, headers, fields, fileField, path, mime) { return post("upload", { url, headers, fields, fileField, path, mime }); },
+    async linkInfo(url) { return post("linkInfo", { url }); },
+    download(url, out, headers, onProgress) {
+      const id = "dl" + (++seq);
+      const done = (async () => {
+        await post("download", { id, url, out, headers });
+        for (;;) {
+          const st = await post("dlpoll", { id });
+          if (onProgress && st.got !== undefined) onProgress(st.got, st.total);
+          if (st.done) return st.result;
+          await new Promise((r) => setTimeout(r, 300));
+        }
+      })();
+      return { done, cancel: () => post("dlcancel", { id }) };
+    },
   };
 }

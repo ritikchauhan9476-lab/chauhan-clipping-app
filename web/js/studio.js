@@ -8,6 +8,7 @@ import * as P from "./preview.js";
 import { AIEngine } from "./ai.js";
 import { relativeItems } from "./autoshort.js";
 import { openTrackTool, probeTracks, langName } from "./tracks.js";
+import { linkSheet } from "./linkdl.js";
 import { FONTS } from "./textrender.js";
 import { bridge } from "./bridge.js";
 import { chooseMedia, playFile, showOutputs, resultRow } from "./files.js";
@@ -85,7 +86,8 @@ export class Studio {
     this.tracksBtn.hidden = true;
     const top = h("div", { class: "moviebar" },
       h("div", { class: "grow" }, this.movieLbl, this.movieInfo, this.tracksBtn),
-      button("Choose video", () => this.chooseMovie(), "primary"));
+      h("div", { class: "col" }, button("Choose video", () => this.chooseMovie(), "primary"),
+        button("YouTube link", async () => { const p = await linkSheet(this.app); if (p) { await this.loadMovie(p); this.app.changed(); } }, "small")));
     this.cv = h("canvas", { class: "preview-canvas", width: 640, height: 360 });
     this.ghost = h("div", { class: "ghost", hidden: true });
     this.stage = h("div", { class: "stage" }, this.cv, this.ghost, h("div", { class: "stage-msg" }, "Choose a video to start"));
