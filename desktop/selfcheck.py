@@ -50,6 +50,8 @@ def t_silence_windows():
 
 def t_modules():
     import engine, dialogue, colour, project, model, scoring, preview, widgets, auto_short, auto_short_ui, studio  # noqa: F401
+    import viral, viral_ui, ytdl  # noqa: F401
+    import cv2  # noqa: F401  (faces for the Viral Clips layouts)
     import app  # noqa: F401
 
 
@@ -472,101 +474,171 @@ def t_pro_edit_and_player():
     return f"pro export 8 s -> {d:.1f}s at 2x; live player showed {shown} frames, reached {pos:.1f}s in 5 s"
 
 
-def t_peakcut():
-    """The PeakCut tab starts the PeakCut server; its pages answer, FFmpeg and the speech model are found."""
-    import json
-    import time
-    import urllib.request
-    import app as A
-    import peakcut_ui as PK
-    assert os.path.isdir(PK.PK_DIR), "peakcut folder missing"
-    w = A.App()
-    w.update()
-    pk = w.peakcut
-    pk.start()
-    t0 = time.time()
-    opened = []
-    PK.webbrowser.open = lambda url: opened.append(url)
-    while time.time() - t0 < 180 and not opened:
-        w.update()
-        time.sleep(0.1)
-        if pk.proc and pk.proc.poll() is not None:
-            break
-    log = pk.log.get("1.0", "end")
-    assert opened, "PeakCut did not start:\n" + log[-1500:]
-    base = f"http://127.0.0.1:{pk.port}"
-    page = urllib.request.urlopen(base + "/", timeout=30).read().decode("utf-8", "ignore")
-    assert "PeakCut" in page or "peakcut" in page.lower(), page[:300]
-    st = json.loads(urllib.request.urlopen(base + "/api/status", timeout=30).read())
-    assert st["no_ffmpeg"] is False, st
-    assert st["speech"]["en"]["state"] == "ready", st["speech"]
-    # the speech model really loads and hears words (sherpa-onnx + Parakeet), in PeakCut's own process
-    code = ("import numpy as np, sys; from studio import transcribe; "
-            "a=np.zeros(16000*3, dtype=np.float32); print('words', len(transcribe.transcribe(a)))")
-    r = subprocess.run([sys.executable, "-c", code], cwd=PK.PK_DIR, env=pk.env(), capture_output=True, text=True,
-                       timeout=600, creationflags=E_NOWIN())
-    assert r.returncode == 0, (r.stdout + r.stderr)[-1500:]
-    pk.stop()
-    w.update()
-    w.destroy()
-    return f"PeakCut server up on {base}, pages + /api/status OK, FFmpeg found, speech model loads ({r.stdout.strip()})"
+def _viral_movie():
+    """72 s test movie with a caption file next to it (like a YouTube download)."""
+    vm = os.path.join(tmp, "viral_talk.mp4")
+    if not os.path.isfile(vm):
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-stream_loop", "5", "-i", movie, "-c", "copy", vm],
+                       check=True)
+        words = ("this is the moment everyone was waiting for and nobody believed it would happen but here we are "
+                 "today laughing together").split()
+        ts = lambda x: f"{int(x // 3600):02d}:{int(x % 3600 // 60):02d}:{x % 60:06.3f}"
+        lines, t, k = ["WEBVTT", "Kind: captions", "Language: en", ""], 0.0, 0
+        while t < 70:
+            ws = [words[(k + i) % len(words)] for i in range(4)]
+            k += 4
+            body = ws[0] + "".join(f"<{ts(t + 0.5 * (i + 1))}><c> {w}</c>" for i, w in enumerate(ws[1:]))
+            lines += [f"{ts(t)} --> {ts(t + 2)} align:start position:0%", body, ""]
+            t += 2.0
+        with open(os.path.join(tmp, "viral_talk.en.vtt"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+    return vm
 
 
-def E_NOWIN():
+def t_viral_engine():
+    """Viral Clips engine: captions file -> built-in scoring -> export with captions + hook + kit; the three
+    layouts render; the AI services (OpenAI-style, Gemini, Claude) through a local stand-in server; faces."""
+    import json, threading, http.server
     import engine as E
-    return E.NOWIN
+    import viral as V
+    vm = _viral_movie()
+    words = V.parse_subtitles(V.find_subtitles(vm)[0])
+    assert len(words) > 100 and words[1][1] > words[0][1], words[:3]
+    cpu = [c for c in E.CODECS if "CPU" in c][0]
+    s = E.sanitize({"resolution": "480p", "codec": cpu, "rate_mode": E.RATE_MODES[0], "bitrate": 2000, "aspect": "9:16"})
+    o = dict(platform=next(iter(V.PLATFORMS)), count=1, min=8, max=14, part_sec=35, start=0, end=None,
+             speech="captions", captions=True, cap_style="Hindi (Devanagari)", cap_pos="Bottom", hook=True,
+             hook_style="Yellow box", layout="Normal", boost={"bar": True}, title="viral talk", zip_kit=True)
+    out = os.path.join(tmp, "viral_out")
+    runner = E.Runner(s, print, None, None)
+    info = E.probe_info(vm)
+    made = []
+    job = V.ViralJob(vm, o, {"provider": "offline"}, log=lambda m: None, on_clip=made.append,
+                     export=lambda c: V.export_clip(runner, vm, c, s, o, out, "vt", info))
+    job.run()
+    assert len(made) == 2 and all(c.get("file") and os.path.isfile(c["file"]) for c in made), made
+    for c in made:
+        for ext in ("_cover.jpg", "_post.txt", "_kit.zip"):
+            assert os.path.isfile(os.path.splitext(c["file"])[0] + ext), ext
+    assert made[1]["start"] >= 34, "part 2's clip must come from part 2"
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                        "-of", "csv=p=0", made[0]["file"]], capture_output=True, text=True).stdout.strip()
+    assert r == "480,854", r
+    # layouts
+    lays = [V.plan_speaker([(t, [(0.2 + 0.01 * t, 0.4, 0.1, 0.15)]) for t in range(10, 30)]),
+            V.plan_facecam([(t, [(0.85, 0.15, 0.08, 0.12)]) for t in range(10, 30)]),
+            V.plan_interview([(t, [(0.25, 0.4, 0.1, 0.15), (0.75, 0.42, 0.1, 0.15)]) for t in range(10, 30)])]
+    assert [l["mode"] for l in lays] == ["speaker", "facecam", "interview"], lays
+    for k, lay in enumerate(lays):
+        f = os.path.join(tmp, f"lay{k}.mp4")
+        assert runner.cut(vm, 10, 4, f, info, None, dict(s, _layout=lay)), lay
+    assert V.faces_available() or os.name != "nt", "face finding (OpenCV) missing"
+    faces = V.sample_faces(vm, 0, 6, 2.0, info=info) if V.faces_available() else [1, 2]
+    assert len(faces) >= 2, faces
+    # AI services through a stand-in server
+    seen = {}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            seen[self.path.split("?")[0]] = 1
+            clips = {"clips": [{"start": 10, "end": 22, "score": 88, "title": "Big moment", "hook": "Wait for it",
+                                "description": "Test.", "hashtags": ["movie", "#clip"]}]}
+            if "generateContent" in self.path:
+                parts = json.loads(body)["contents"][0]["parts"]
+                if any("inline_data" in p for p in parts):
+                    out = {"segments": [{"start": i * 4, "end": i * 4 + 3.5, "text": f"line {i} here."} for i in range(8)]}
+                else:
+                    out = {"ok": True} if '{"ok": true}' in parts[0]["text"] else clips
+                d = {"candidates": [{"content": {"parts": [{"text": json.dumps(out)}]}}]}
+            elif self.path.endswith("/messages"):
+                d = {"content": [{"type": "text", "text": json.dumps(clips)}], "usage": {"input_tokens": 5, "output_tokens": 1}}
+            elif self.path.endswith("/audio/transcriptions"):
+                d = {"words": [{"word": f"w{i}", "start": i * 0.4, "end": i * 0.4 + 0.3} for i in range(80)]}
+            else:
+                d = {"choices": [{"message": {"content": json.dumps(clips)}}]}
+            b = json.dumps(d).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    res = []
+    for ai, speech in [({"provider": "custom", "base": base + "/v1", "stt": "whisper-1"}, "cloud"),
+                       ({"provider": "gemini", "base": base + "/v1beta", "key": "k"}, "gemini"),
+                       ({"provider": "anthropic", "base": base + "/v1", "key": "k"}, "captions")]:
+        got = []
+        V.ViralJob(vm, dict(o, speech=speech, end=35), ai, log=lambda m: None, on_clip=got.append).run()
+        assert got and got[0]["title"] == "Big moment" and "#movie" in got[0]["hashtags"], (ai, got)
+        res.append(ai["provider"])
+    assert V.test_key({"provider": "gemini", "base": base + "/v1beta", "key": "k"})
+    srv.shutdown()
+    return f"2 clips with captions + hook + kit; 3 layouts; faces sampled; AI: {', '.join(res)}"
 
 
-def t_peakcut_parts():
-    """A movie in parts: part 1 is cut, sent and finished by PeakCut while part 2 waits / works."""
+def t_viral_window():
+    """The Viral Clips tab as the user does it: movie, FIND VIRAL CLIPS (every clip exported as found), then the
+    Export button of the same tab exports the ticked clips again with the tab's colour; the project keeps it."""
     import time
     import app as A
-    import peakcut_ui as PK
-    import pk_parts
-    assert pk_parts.plan_parts(1000, 300) == [(0.0, 300.0), (300.0, 600.0), (600.0, 900.0), (900.0, 1000)]
-    assert pk_parts.plan_parts(950, 300)[-1] == (600.0, 950)          # a tiny last bit joins the part before
-    assert pk_parts.plan_parts(1000, 300, 100, 400) == [(100, 400)]
-    long_movie = os.path.join(tmp, "long_talk.mp4")
-    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-stream_loop", "4", "-i", movie, "-c", "copy",
-                    long_movie], check=True)
+    import engine as E
+    import viral_ui as VU
+    vm = _viral_movie()
     w = A.App()
     w.update()
-    pk = w.peakcut
-    PK.webbrowser.open = lambda url: None
-    pk.start()
-    pk.pjob_finished = False
-    pk.p_run(long_movie, 30, dict(max_clips=2, min_len=5, max_len=20, captions=True))
+    st = w.viral
+    tabs = list(st.right._tab_dict.keys())
+    for t in ("AI Clips", "Aspect & Crop", "Colour", "Overlay", "Text", "Silence", "Speed & Effects", "Export", "Dialogue"):
+        assert t in tabs, (t, tabs)
+    msgs = []
+    for m in ("showerror", "showwarning", "showinfo"):
+        setattr(VU.messagebox, m, lambda *a, **k: msgs.append(a))
+    VU.messagebox.askyesno = lambda *a, **k: True
+    st.load_movie(vm)
+    st.cfg.update(codec=[c for c in E.CODECS if "CPU" in c][0], resolution="480p", rate_mode=E.RATE_MODES[0],
+                  bitrate=2000, brightness=0.1)
+    st.sync_export = lambda: None
+    vv = st.vv
+    vv["provider"].set(VU.V.PROVIDERS["offline"]["label"])
+    vv["speech"].set(VU.V.SPEECH["captions"])
+    for k, v in (("count", "1"), ("min", "8"), ("max", "14"), ("part_min", "0.6")):
+        vv[k].set(v)
+    vv["layout"].set("Follow the speaker")
+    st.v_start(False)
+    assert not msgs, msgs
     t0 = time.time()
-    while time.time() - t0 < 900 and not pk.pjob_finished:
+    while st.vjob is not None and time.time() - t0 < 600:
         w.update()
-        time.sleep(0.2)
-    log = pk.log.get("1.0", "end")
-    parts = pk.pjob.parts if pk.pjob else []
-    pk.stop()
+        time.sleep(0.05)
+    log = st.v_log.get("1.0", "end")
+    assert st.vjob is None, "viral clips did not finish:\n" + log[-1500:]
+    assert len(st.parts) >= 2 and all(p.get("viral") for p in st.parts), (st.parts, log[-1500:])
+    out = st.out_dir_for(False)
+    files = sorted(f for f in os.listdir(out) if f.endswith(".mp4"))
+    assert len(files) == len(st.parts), (files, log[-1500:])
+    # the still preview and the Export button (exports the ticked clips again)
+    st.select_part(0)
     w.update()
+    for p in st.parts[1:]:
+        p["on"] = False
+    st.done_names = set()
+    st.export()
+    t0 = time.time()
+    while st.eng is not None and time.time() - t0 < 300:
+        w.update()
+        time.sleep(0.05)
+    elog = st.exp_log.get("1.0", "end")
+    assert st.eng is None and "Saved:" in elog, elog[-1500:]
+    state = st.get_state()
+    assert state["viral"]["layout"] == "Follow the speaker" and state["parts"][0]["viral"]["title"]
     w.destroy()
-    assert pk.pjob_finished, "parts did not finish:\n" + log[-1500:]
-    assert len(parts) == 2, parts
-    states = [p["state"] for p in parts]
-    assert all(s == "done" for s in states), (states, [p["stage"] for p in parts], log[-1500:])
-    return f"2 parts of 30 s sent one by one, both done; clips per part: {[p['clips'] for p in parts]}"
-
-
-def t_autoclip():
-    """AutoClip is installed in the folder and its window starts."""
-    import time
-    import autoclip_ui as AC
-    exe = AC.exe_path()
-    assert exe, "autoclip folder / exe missing"
-    p = subprocess.Popen([exe], cwd=AC.AC_DIR)
-    time.sleep(20)
-    alive = p.poll() is None
-    try:
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)
-    except Exception:
-        p.kill()
-    assert alive, f"AutoClip closed by itself (code {p.returncode})"
-    return f"{os.path.basename(exe)} starts and keeps running ({sum(1 for _ in os.scandir(AC.AC_DIR))} items in autoclip)"
+    return f"{len(st.parts)} clips found + exported ({', '.join(files)[:120]}); Export again OK"
 
 
 def t_youtube():
@@ -666,7 +738,10 @@ def t_whisper():
     import dialogue
     words = dialogue.transcribe_words(np.zeros(16000, dtype="float32"), "en", print)
     assert words is not None, "Whisper did not load"
-    return "bundled model loads offline"
+    import viral as V
+    heard = V.Listener("local", {}, "en", "small", print).listen(movie, 0.0, 10.0)
+    assert isinstance(heard, list), heard
+    return f"bundled model loads offline; Viral Clips listening with word times works ({len(heard)} words in a tone)"
 
 
 step("ffmpeg + test movie", t_ffmpeg)
@@ -679,10 +754,9 @@ step("Simple Edit: stop + continue, text per video", t_resume_and_text_per_video
 step("word colour, clean end, auto short ends", t_word_colour_and_clean_end)
 step("CapCut text options (styles, effects, animations)", t_capcut_text)
 step("pro edit (rotate, crop, speed, effects) + live player", t_pro_edit_and_player)
-step("PeakCut tab (server, pages, ffmpeg, speech model)", t_peakcut)
+step("Viral Clips engine (captions, hook, layouts, AI services, kit)", t_viral_engine)
+step("Viral Clips tab (find + export as found, Export again, project)", t_viral_window)
 step("YouTube link download (yt-dlp + deno)", t_youtube)
-step("PeakCut on a movie in fast parts", t_peakcut_parts)
-step("AutoClip tab (installed app starts)", t_autoclip)
 step("silence cut, one part at a time (AI Clipping)", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)
 step("400 pieces in one clip (long filter graph)", t_many_pieces)

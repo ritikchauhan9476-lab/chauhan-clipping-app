@@ -75,11 +75,48 @@ def download(url, max_h=1080, progress=None, stop=None, log=None):
     base = os.path.splitext(path)[0]
     for ext in (".mp4", ".mkv", ".webm", os.path.splitext(path)[1]):
         if os.path.isfile(base + ext):
+            progress(1.0, "Getting the captions ...")
+            fetch_captions(url, base, log)
             progress(1.0, "Downloaded")
             return base + ext
     if done.get("file") and os.path.isfile(done["file"]):
         return done["file"]
     raise RuntimeError("The download finished but the file was not found.")
+
+
+def fetch_captions(url, base, log=None):
+    """The video's own captions (Hindi / English, made by the uploader or automatic) as '<video name>.<lang>.vtt'
+    next to the video. Viral Clips can use them instead of Whisper. Best effort: no captions = no problem."""
+    try:
+        import yt_dlp
+
+        class Quiet:
+            def debug(self, m):
+                pass
+
+            def info(self, m):
+                pass
+
+            def warning(self, m):
+                pass
+
+            def error(self, m):
+                pass
+        opts = {"skip_download": True, "writesubtitles": True, "writeautomaticsub": True,
+                "subtitleslangs": ["hi", "hi-orig", "en", "en-orig"], "subtitlesformat": "vtt",
+                "outtmpl": base + ".%(ext)s", "noplaylist": True, "quiet": True, "logger": Quiet(),
+                "ignoreerrors": True}
+        with yt_dlp.YoutubeDL(opts) as y:
+            y.extract_info(url, download=True)
+        got = [f for f in os.listdir(os.path.dirname(base) or ".")
+               if os.path.join(os.path.dirname(base), f).startswith(base + ".") and f.endswith(".vtt")]
+        if log and got:
+            log(f"Captions saved: {', '.join(got)}")
+        return got
+    except Exception as e:
+        if log:
+            log(f"note: no captions ({str(e)[:120]})")
+        return []
 
 
 LINK = re.compile(r"^https?://\S+$")

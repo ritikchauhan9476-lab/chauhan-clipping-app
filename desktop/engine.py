@@ -905,6 +905,102 @@ def text_filters(t, OW, OH, tst, ten, tmp):
     return layers(_tf(tmp, text), t["color"], f"{xe}+{dx_e}", f"{ye}+{dy_e}", whole)
 
 
+def wrap_caption(text, style, OW, OH, max_frac=0.9):
+    """A caption page that is wider than the frame is put on two lines (split between words)."""
+    if "\n" in text:
+        return text
+    try:
+        from PIL import ImageFont
+        ff = resolve_font(style.get("font", "Arial"))
+        fs = max(8, int(OH * float(style.get("size", 6)) / 100))
+        font = ImageFont.truetype(ff, fs) if ff else None
+    except Exception:
+        font = None
+    plain = strip_colors(text)
+    width = font.getlength(plain) if font else len(plain) * OH * float(style.get("size", 6)) / 100 * 0.6
+    if width <= OW * max_frac:
+        return text
+    toks = re.split(r"( )(?![^{]*\})", text)
+    words = [t for t in toks if t != " "]
+    if len(words) < 2:
+        return text
+    best, bi = None, 1
+    for i in range(1, len(words)):
+        l1, l2 = strip_colors(" ".join(words[:i])), strip_colors(" ".join(words[i:]))
+        d = abs(len(l1) - len(l2))
+        if best is None or d < best:
+            best, bi = d, i
+    return " ".join(words[:bi]) + "\n" + " ".join(words[bi:])
+
+
+def _lerp_expr(keys):
+    """[(t, value), ...] -> an FFmpeg expression of t that goes smoothly from key to key."""
+    if not keys:
+        return "0"
+    if len(keys) == 1:
+        return f"{keys[0][1]:.1f}"
+    e = f"{keys[-1][1]:.1f}"
+    for k in range(len(keys) - 2, -1, -1):
+        (t0, v0), (t1, v1) = keys[k], keys[k + 1]
+        dt = max(0.001, t1 - t0)
+        e = f"if(lt(t,{t1:.3f}),{v0:.1f}+({v1 - v0:.1f})*(t-{t0:.3f})/{dt:.3f},{e})"
+    return f"if(lt(t,{keys[0][0]:.3f}),{keys[0][1]:.1f},{e})"
+
+
+def layout_filters(lay, s, sw, sh, fl, st, add, newlab, clip_t, dur):
+    """Viral Clips layouts (replace the crop + fit stage): follow the speaker, facecam on top, interview.
+    Fractions (0-1) of the picture. Returns the output size."""
+    OW, OH = out_size(s, sw, sh)
+    mode = lay["mode"]
+
+    def box_for(cx, cy, W, H):
+        """the biggest W:H box of the source around (cx, cy)"""
+        r = W / H
+        bw, bh = (sh * r, sh) if sh * r <= sw else (sw, sw / r)
+        bw, bh = max(2, int(bw) // 2 * 2), max(2, int(bh) // 2 * 2)
+        x = min(max(0, int(cx * sw - bw / 2)), sw - bw) // 2 * 2
+        y = min(max(0, int(cy * sh - bh / 2)), sh - bh) // 2 * 2
+        return bw, bh, x, y
+
+    if mode == "speaker":
+        bw, bh, _, y = box_for(0.5, 0.45, OW, OH)
+        keys = []
+        for t, cx in lay.get("keys") or [(0, 0.5)]:
+            tc = clip_t(float(t))
+            if tc is None:
+                continue
+            keys.append((max(0.0, tc), min(max(0.0, float(cx) * sw - bw / 2), sw - bw)))
+        keys = sorted(keys) or [(0.0, (sw - bw) / 2)]
+        add(f"crop={bw}:{bh}:x='{_lerp_expr(keys)}':y={y},scale={OW}:{OH}:flags=lanczos,setsar=1")
+        return OW, OH
+    n = st["n"] + 1
+    if mode == "facecam":
+        x, y, w, h = [float(v) for v in lay.get("cam") or [0.0, 0.0, 0.3, 0.3]]
+        th = max(2, int(OH * 0.38) // 2 * 2)
+        bh_ = OH - th
+        cx_, cy_ = max(2, int(w * sw) // 2 * 2), max(2, int(h * sh) // 2 * 2)
+        fl.append(f"{st['cur']}split=2[fca{n}][fcb{n}]")
+        fl.append(f"[fca{n}]crop={cx_}:{cy_}:{int(x * sw) // 2 * 2}:{int(y * sh) // 2 * 2},"
+                  f"scale={OW}:{th}:force_original_aspect_ratio=increase:flags=lanczos,crop={OW}:{th},setsar=1[fct{n}]")
+        fl.append(f"[fcb{n}]scale={OW}:{bh_}:force_original_aspect_ratio=increase:flags=lanczos,crop={OW}:{bh_},"
+                  f"setsar=1[fcg{n}]")
+        lab = newlab()
+        fl.append(f"[fct{n}][fcg{n}]vstack=inputs=2{lab}")
+        st["cur"] = lab
+        return OW, OH
+    # interview: two people, one above the other
+    hh = max(2, OH // 2 // 2 * 2)
+    (c1, y1), (c2, y2) = lay.get("faces") or [[0.3, 0.45], [0.7, 0.45]]
+    fl.append(f"{st['cur']}split=2[iva{n}][ivb{n}]")
+    for tag, (cx, cy), hgt in (("a", (c1, y1), hh), ("b", (c2, y2), OH - hh)):
+        bw, bh, x, y = box_for(float(cx), float(cy), OW, hgt)
+        fl.append(f"[iv{tag}{n}]crop={bw}:{bh}:{x}:{y},scale={OW}:{hgt}:flags=lanczos,setsar=1[ivo{tag}{n}]")
+    lab = newlab()
+    fl.append(f"[ivoa{n}][ivob{n}]vstack=inputs=2{lab}")
+    st["cur"] = lab
+    return OW, OH
+
+
 def build_command(movie, start, dur, out, s, info, crop=None, codec=None, preview_t=None, pieces=None, live=None):
     """One ffmpeg command for the clip [start, start+dur]. Timeline items are movie-absolute and are
     shifted to clip time here. Order: auto-crop > colour > chroma > aspect/crop > overlays > text > audio.
@@ -971,41 +1067,56 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
     if cf:
         add(",".join(cf))
 
-    # 1) IMPORTED MOVIE crop: ratio, zoom and position (this is the picture you see inside the frame)
-    cx, cy, cw, ch = source_crop_box(s, sw, sh)
-    if (cw, ch) != (sw, sh):
-        add(f"crop={cw}:{ch}:{cx}:{cy},setsar=1")
-    sw, sh = cw, ch
+    def clip_t(t_abs):
+        """movie time -> time in this clip (None = cut out)."""
+        if pieces:
+            acc = 0.0
+            for pa, pd in pieces:
+                if pa - 0.01 <= t_abs <= pa + pd + 0.01:
+                    return acc + min(max(0.0, t_abs - pa), pd)
+                acc += pd
+            return None
+        return t_abs - start
 
-    # 2) FINAL OUTPUT frame: its own ratio + resolution. The cropped picture is fitted into it.
-    OW, OH = out_size(s, sw, sh)
-    crop_mode = s["fit_mode"].startswith("Crop")
-    pct = 100.0 if crop_mode else float(s["fit_scale"])
-    same_ratio = abs(OW / OH - sw / sh) < 0.01
-    if same_ratio and pct >= 99.5:
-        add(f"scale={OW}:{OH}:flags=lanczos,setsar=1")
-    elif crop_mode:
-        f = max(OW / sw, OH / sh)
-        nw, nh = max(OW, ev_up(sw * f)), max(OH, ev_up(sh * f))
-        add(f"scale={nw}:{nh}:flags=lanczos,crop={OW}:{OH}:{(nw - OW) // 2}:{(nh - OH) // 2},setsar=1")
+    layout = s.get("_layout") or {}
+    if layout.get("mode") in ("speaker", "facecam", "interview"):
+        OW, OH = layout_filters(layout, s, sw, sh, fl, st, add, newlab, clip_t, dur)
     else:
-        # the movie sits inside the frame: size = fit_scale % of the biggest size that fits, position = fit_y %
-        k = min(OW / sw, OH / sh) * pct / 100.0
-        fw, fh = min(OW, ev(sw * k)), min(OH, ev(sh * k))
-        fy = float(s["fit_y"]) / 100.0
-        if s["fit_mode"].startswith("Blur"):
-            n = st["n"] + 1
-            amt = max(2, min(int(s["blur_amount"]), min(OW, OH) // 4))
-            fl.append(f"{st['cur']}split=2[ga{n}][gb{n}]")
-            fl.append(f"[ga{n}]scale={OW}:{OH}:force_original_aspect_ratio=increase,crop={OW}:{OH},"
-                      f"boxblur={amt}:3[gk{n}]")
-            fl.append(f"[gb{n}]scale={fw}:{fh}:flags=lanczos[gf{n}]")
-            lab = newlab()
-            fl.append(f"[gk{n}][gf{n}]overlay=(W-w)/2:(H-h)*{fy:.4f}{lab}")
-            st["cur"] = lab
+        # 1) IMPORTED MOVIE crop: ratio, zoom and position (this is the picture you see inside the frame)
+        cx, cy, cw, ch = source_crop_box(s, sw, sh)
+        if (cw, ch) != (sw, sh):
+            add(f"crop={cw}:{ch}:{cx}:{cy},setsar=1")
+        sw, sh = cw, ch
+
+        # 2) FINAL OUTPUT frame: its own ratio + resolution. The cropped picture is fitted into it.
+        OW, OH = out_size(s, sw, sh)
+        crop_mode = s["fit_mode"].startswith("Crop")
+        pct = 100.0 if crop_mode else float(s["fit_scale"])
+        same_ratio = abs(OW / OH - sw / sh) < 0.01
+        if same_ratio and pct >= 99.5:
+            add(f"scale={OW}:{OH}:flags=lanczos,setsar=1")
+        elif crop_mode:
+            f = max(OW / sw, OH / sh)
+            nw, nh = max(OW, ev_up(sw * f)), max(OH, ev_up(sh * f))
+            add(f"scale={nw}:{nh}:flags=lanczos,crop={OW}:{OH}:{(nw - OW) // 2}:{(nh - OH) // 2},setsar=1")
         else:
-            col = "black" if s["fit_mode"].startswith("Black") else hex0x(s["bg_color"], "1E1E1E")
-            add(f"scale={fw}:{fh}:flags=lanczos,pad={OW}:{OH}:(ow-iw)/2:(oh-ih)*{fy:.4f}:{col},setsar=1")
+            # the movie sits inside the frame: size = fit_scale % of the biggest size that fits, position = fit_y %
+            k = min(OW / sw, OH / sh) * pct / 100.0
+            fw, fh = min(OW, ev(sw * k)), min(OH, ev(sh * k))
+            fy = float(s["fit_y"]) / 100.0
+            if s["fit_mode"].startswith("Blur"):
+                n = st["n"] + 1
+                amt = max(2, min(int(s["blur_amount"]), min(OW, OH) // 4))
+                fl.append(f"{st['cur']}split=2[ga{n}][gb{n}]")
+                fl.append(f"[ga{n}]scale={OW}:{OH}:force_original_aspect_ratio=increase,crop={OW}:{OH},"
+                          f"boxblur={amt}:3[gk{n}]")
+                fl.append(f"[gb{n}]scale={fw}:{fh}:flags=lanczos[gf{n}]")
+                lab = newlab()
+                fl.append(f"[gk{n}][gf{n}]overlay=(W-w)/2:(H-h)*{fy:.4f}{lab}")
+                st["cur"] = lab
+            else:
+                col = "black" if s["fit_mode"].startswith("Black") else hex0x(s["bg_color"], "1E1E1E")
+                add(f"scale={fw}:{fh}:flags=lanczos,pad={OW}:{OH}:(ow-iw)/2:(oh-ih)*{fy:.4f}:{col},setsar=1")
 
     # finishing look on the final frame: particles (grain), vignette
     ff = CL.ffmpeg_finish(s)
@@ -1082,6 +1193,29 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
         tst, ten = sp
         for f in text_filters(t, OW, OH, tst, ten, tmp):
             add(f)
+
+    # word-by-word captions (Viral Clips) and the hook title of the first seconds
+    cw_ = s.get("_capwords")
+    if cw_:
+        import viral as VR
+        style = VR.CAPTION_STYLES.get(s.get("_capstyle")) or next(iter(VR.CAPTION_STYLES.values()))
+        a0 = start if not pieces else pieces[0][0]
+        b0 = start + dur if not pieces else pieces[-1][0] + pieces[-1][1]
+        for t0, t1, text in VR.caption_events([tuple(w) for w in cw_], a0, b0, style, clip_t if pieces else None):
+            if t0 >= dur:
+                continue
+            item = VR.caption_item(style, float(s.get("_cappos", 72.0)), wrap_caption(text, style, OW, OH))
+            for f in text_filters(item, OW, OH, t0, min(t1, dur), tmp):
+                add(f)
+    hk = s.get("_hook")
+    if hk and str(hk.get("text", "")).strip():
+        import viral as VR
+        item = VR.hook_item(hk.get("style"), wrap_caption(str(hk["text"]), VR.HOOK_STYLES.get(hk.get("style"), {}), OW, OH, 0.86))
+        h0 = 0.0 if hk.get("at") is None else (clip_t(float(hk["at"])) if pieces else float(hk["at"]) - start)
+        h1 = (h0 if h0 is not None else -99) + float(hk.get("sec", 3))
+        if h0 is not None and h1 > 0.05:
+            for f in text_filters(item, OW, OH, max(0.0, h0), min(h1, dur), tmp):
+                add(f)
 
     if boost.get("bar") and dur > 1.0:                 # thin progress bar along the top: viewers stay to see it fill
         bh = max(4, (OH // 200) // 2 * 2)
@@ -1584,6 +1718,16 @@ class StudioEngine(Runner):
                 self.log(f"Part {i}: nothing is left after removing silence - skipped.")
                 continue
             S = dict(self.s, overlays=p["overlays"], texts=p["texts"])
+            S.update(p.get("extra") or {})
+            req = S.pop("_layout_req", None)
+            if req and not S.get("_layout"):
+                try:
+                    import viral as VR
+                    self.log(f"Part {i}: finding the faces for the layout ...")
+                    S["_layout"] = VR.plan_layout(movie, p["start"], p["end"], req["mode"], info, self.log,
+                                                  req.get("cam")) or {}
+                except Exception as e:
+                    self.log(f"Part {i}: face finding failed ({str(e)[:200]}) - normal picture.")
             if p.get("single_pass"):
                 self.log(f"Part {i}: cutting {len(pieces)} dialogue piece(s) into one clip ...")
                 ok = bool(self.cut(movie, pieces[0][0], 0, final, info, crop, S, pieces=pieces))
@@ -1597,7 +1741,8 @@ class StudioEngine(Runner):
                 for k, (t0, d) in enumerate(pieces, 1):
                     sp = os.path.join(seg, f"p{k:03d}.mp4")
                     self.log(f"Part {i}: piece {k}/{len(pieces)} ...")
-                    ok = bool(self.cut(movie, t0, d, sp, info, crop, S)) and ok
+                    Sk = S if k == 1 else {kk: vv for kk, vv in S.items() if kk != "_hook"}   # the hook only at the start
+                    ok = bool(self.cut(movie, t0, d, sp, info, crop, Sk)) and ok
                     segs.append(sp)
                     if self.stop_flag:
                         break
@@ -1610,6 +1755,11 @@ class StudioEngine(Runner):
                 break
             if ok:
                 done += 1
+                if p.get("after"):
+                    try:
+                        p["after"](final)
+                    except Exception as e:
+                        self.log(f"Part {i}: cover / post text failed ({str(e)[:200]})")
                 self.on_clip(dict(path=final, n=i, start=p["start"], end=p["end"], score=None,
                                   category="Clip", text=p.get("label", ""), reason=""))
             else:

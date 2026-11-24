@@ -522,19 +522,15 @@ class App(ctk.CTk):
         self.tabs.add("AI Clipping")
         self.tabs.add("Timeline (advanced)")
         self.tabs.add("Auto Short")
-        self.tabs.add("PeakCut (AI clips)")
-        self.tabs.add("AutoClip")
+        self.tabs.add("Viral Clips (AI)")
         self.simple = Studio(self.tabs.tab("Simple Edit"), self, "simple")
         self.simple.pack(fill="both", expand=True)
         self.ai = Studio(self.tabs.tab("AI Clipping"), self, "ai")
         self.auto_short = AutoShortFrame(self.tabs.tab("Auto Short"), self, self.simple)
         self.auto_short.pack(fill="both", expand=True)
-        import peakcut_ui
-        self.peakcut = peakcut_ui.PeakCutFrame(self.tabs.tab("PeakCut (AI clips)"), self)
-        self.peakcut.pack(fill="both", expand=True)
-        import autoclip_ui
-        self.autoclip = autoclip_ui.AutoClipFrame(self.tabs.tab("AutoClip"), self)
-        self.autoclip.pack(fill="both", expand=True)
+        from viral_ui import ViralStudio
+        self.viral = ViralStudio(self.tabs.tab("Viral Clips (AI)"), self)
+        self.viral.pack(fill="both", expand=True)
         self.ai.pack(fill="both", expand=True)
         self.build_editor(self.tabs.tab("Timeline (advanced)"))
         self.tabs.set("Simple Edit")
@@ -1072,7 +1068,7 @@ class App(ctk.CTk):
         """The state without 'where you are looking' (tab, part, position): moving around is not a change."""
         c = copy.deepcopy(st)
         c.pop("active_tab", None)
-        for k in ("simple", "ai"):
+        for k in ("simple", "ai", "viral"):
             sub = c.get(k) or {}
             for key in ("right_tab", "part_idx", "t_rel", "sel"):
                 sub.pop(key, None)
@@ -1080,11 +1076,12 @@ class App(ctk.CTk):
         return c
 
     def blank_state(self):
-        return dict(active_tab="Simple Edit", simple={}, ai={}, timeline={}, auto_short={})
+        return dict(active_tab="Simple Edit", simple={}, ai={}, viral={}, timeline={}, auto_short={})
 
     def collect_state(self):
         self.sync_vars()
         return dict(active_tab=self.tabs.get(), simple=self.simple.get_state(), ai=self.ai.get_state(),
+                    viral=self.viral.get_state(),
                     timeline=dict(settings=copy.deepcopy(self.s), movie=self.movie, t=round(float(self.t), 3)),
                     auto_short=self.auto_short.get_state())
 
@@ -1124,7 +1121,7 @@ class App(ctk.CTk):
         """Puts a saved project back into every tab. Returns a list of problems (empty = all restored)."""
         self._relocated = {}
         problems = []
-        for key, studio in (("simple", self.simple), ("ai", self.ai)):
+        for key, studio in (("simple", self.simple), ("ai", self.ai), ("viral", self.viral)):
             sub = st.get(key) or {}
             try:
                 problems += studio.set_state(sub, self.resolve_movie(sub.get("movie", ""))) or []
@@ -1331,7 +1328,7 @@ class App(ctk.CTk):
         except Exception:
             self.report_error("Saving before closing")
         try:
-            for tab in (self.simple, self.ai, self.peakcut):
+            for tab in (self.simple, self.ai, self.viral):
                 tab.on_close_cleanup()
             E.save_settings(self.sync_vars())
         finally:

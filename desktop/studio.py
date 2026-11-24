@@ -60,7 +60,8 @@ class Studio(ctk.CTkFrame):
     def __init__(self, parent, app, mode):
         super().__init__(parent, fg_color="transparent")
         self.app = app
-        self.mode = mode                      # "simple" or "ai"
+        self.mode = mode                      # "simple", "ai" or "viral"
+        self.cutting = mode in ("ai", "viral")  # silence cut + dialogue clean-up live in these tabs
         self.movie, self.info, self.dur = "", None, 0.0
         self.cfg = E.sanitize({})             # every setting of this tab (colour, crop, export, AI, ...)
         self.cfg["orig_volume"] = 100
@@ -179,8 +180,8 @@ class Studio(ctk.CTkFrame):
         # Simple Edit is only editing (crop, colour, overlay, text, export): no silence cut and no dialogue clean-up.
         # Those two live in AI Clipping. (Their settings objects are still created, in a hidden frame, so the rest of the
         # program keeps working; they are never used in Simple Edit.)
-        cutting = self.mode == "ai"
-        for name in ("Aspect & Crop", "Colour", "Overlay", "Text") + (("Silence",) if cutting else ()) + (("Clean start / end",) if not cutting else ()) + ("Speed & Effects", "Export",) + (("Dialogue",) if cutting else ()):
+        cutting = self.cutting
+        for name in (("AI Clips",) if self.mode == "viral" else ()) + ("Aspect & Crop", "Colour", "Overlay", "Text") + (("Silence",) if cutting else ()) + (("Clean start / end",) if not cutting else ()) + ("Speed & Effects", "Export",) + (("Dialogue",) if cutting else ()):
             self.right.add(name)
         self.build_aspect(self.right.tab("Aspect & Crop"))
         self.build_colour(self.right.tab("Colour"))
@@ -192,6 +193,9 @@ class Studio(ctk.CTkFrame):
         self.build_fx(self.right.tab("Speed & Effects"))
         self.build_export(self.right.tab("Export"))
         self.build_dialogue(self.right.tab("Dialogue") if cutting else hidden)
+        if self.mode == "viral":
+            self.build_viral_tab(self.right.tab("AI Clips"))
+            self.right.set("AI Clips")
 
     def scroll(self, parent):
         f = ctk.CTkScrollableFrame(parent, fg_color="transparent")
@@ -200,9 +204,11 @@ class Studio(ctk.CTkFrame):
 
     # ---------------- left: range / parts (or AI)
     def build_left(self, p):
-        ctk.CTkLabel(p, text=("1. AI FINDS THE CLIPS" if self.mode == "ai" else "1. RANGE AND PARTS"),
+        ctk.CTkLabel(p, text={"ai": "1. AI FINDS THE CLIPS", "viral": "1. VIRAL CLIPS (AI)"}.get(self.mode, "1. RANGE AND PARTS"),
                      font=ctk.CTkFont(size=13, weight="bold"), text_color=NEON).pack(anchor="w", padx=10, pady=(10, 2))
-        if self.mode == "simple":
+        if self.mode == "viral":
+            self.build_viral_left(p)
+        elif self.mode == "simple":
             self.p_start = tk.StringVar(value="0")
             self.p_end = tk.StringVar(value="")
             self.p_count = tk.StringVar(value="3")
@@ -574,7 +580,7 @@ class Studio(ctk.CTkFrame):
     def build_export(self, tab):
         f = self.scroll(tab)
         self.exp_v = {}
-        if self.mode == "ai":
+        if self.cutting:
             ctk.CTkLabel(f, text="CUTTING (ON / OFF)", font=ctk.CTkFont(size=13, weight="bold"),
                          text_color=NEON).pack(anchor="w", padx=10, pady=(10, 2))
             ctk.CTkSwitch(f, text="Cut silent pauses", variable=self.sil_on, text_color=TEXT,
@@ -668,7 +674,7 @@ class Studio(ctk.CTkFrame):
 
     def update_cut_info(self):
         """Shows what the export button will do with the two switches."""
-        if self.mode != "ai":
+        if not self.cutting:
             return
         dl, sl = bool(self.dl_on.get()), bool(self.sil_on.get())
         if dl:
@@ -890,7 +896,7 @@ class Studio(ctk.CTkFrame):
                                                                                    sticky="w")
             sil = tk.BooleanVar(value=bool(p["sil"]))
             sil.trace_add("write", lambda *a, p=p, v=sil: self._set_flag(p, "sil", v))
-            if self.mode == "ai":
+            if self.cutting:
                 ctk.CTkCheckBox(row, text="cut silence", variable=sil, width=110).grid(row=0, column=1, padx=4,
                                                                                        pady=(6, 0), sticky="w")
             ctk.CTkButton(row, text="Show", width=60, height=26, fg_color=QUIET, hover_color=QUIET_H,
@@ -905,6 +911,9 @@ class Studio(ctk.CTkFrame):
             ov.trace_add("write", lambda *a, p=p, v=ov: self._set_flag(p, "ov", v))
             ctk.CTkCheckBox(row, text="Overlay on this video", variable=ov, width=150).grid(
                 row=2, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 6))
+            if p.get("label") and self.mode == "viral":
+                ctk.CTkLabel(row, text=str(p["label"])[:70], text_color=NEON, anchor="w", wraplength=280,
+                             justify="left").grid(row=3, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 6))
         n_on = sum(1 for p in self.parts if p["on"])
         self.parts_sum.configure(text=f"{n_on} of {len(self.parts)} parts will be exported" if self.parts
                                  else "No parts yet. Make parts above.")
@@ -1921,7 +1930,7 @@ class Studio(ctk.CTkFrame):
     def export(self, with_dialogue=None):
         if with_dialogue is None:
             with_dialogue = bool(self.dl_on.get())
-        if self.mode != "ai":
+        if not self.cutting:
             with_dialogue = False                    # Simple Edit: editing only, nothing is cut out
         if not self.movie:
             messagebox.showwarning("Export", "Please choose a movie first.")
@@ -2027,7 +2036,7 @@ class Studio(ctk.CTkFrame):
         threading.Thread(target=work, daemon=True).start()
 
     def out_dir_for(self, with_dialogue=False):
-        return os.path.join(E.OUTPUT_DIR, f"{self.file_base()}_{'simple' if self.mode == 'simple' else 'ai'}"
+        return os.path.join(E.OUTPUT_DIR, f"{self.file_base()}_{ {'simple': 'simple', 'viral': 'viral'}.get(self.mode, 'ai')}"
                                           + ("_dialogue" if with_dialogue else ""))
 
     def done_key(self, out_dir, file):
@@ -2049,7 +2058,7 @@ class Studio(ctk.CTkFrame):
             if not self.movie or not self.parts:
                 self.resume_lbl.configure(text="")
                 return
-            done, todo = self.pending_parts(self.out_dir_for(bool(self.dl_on.get()) and self.mode == "ai"))
+            done, todo = self.pending_parts(self.out_dir_for(bool(self.dl_on.get()) and self.cutting))
             if done and todo and self.resume_on.get():
                 self.resume_lbl.configure(text=f"{len(done)} part(s) already exported. Export continues with part "
                                                f"{todo[0]} ({len(todo)} left).")
@@ -2072,7 +2081,7 @@ class Studio(ctk.CTkFrame):
             number = self.part_number(idx)
             ovs, txs = self.localized(p, number)
             pieces = [(p["start"], p["end"] - p["start"])]       # silence_prepare cuts the silence of this part only, when its turn comes
-            sil_flag = bool(self.mode == "ai" and self.sil_on.get() and p["sil"])
+            sil_flag = bool(self.cutting and self.sil_on.get() and p["sil"])
             plans.append(dict(file=self.plan_file(idx, p), start=p["start"],
                               end=p["end"], label=p.get("label", ""), pieces=pieces, overlays=ovs, texts=txs,
                               number=number, sil=sil_flag, ov=bool(p.get("ov", True)),
@@ -2086,7 +2095,7 @@ class Studio(ctk.CTkFrame):
     def silence_prepare(self, movie, log):
         """Returns a function that, for ONE part at a time, scans only that part's sound for silence and builds its
         pieces - so the movie is never scanned as a whole: scan part 1 -> export part 1 -> scan part 2 -> ..."""
-        if self.mode != "ai" or not self.sil_on.get():
+        if not self.cutting or not self.sil_on.get():
             return None
         noise, mn, pad = float(self.sil_db.get()), float(self.sil_min.get()), float(self.sil_pad.get())
         head = self.head_seconds() if self.head_on.get() else None
@@ -2221,6 +2230,8 @@ class Studio(ctk.CTkFrame):
                     self.on_export_msg(kind, v)
                 elif kind in ("alog", "aprog", "aclip", "adone"):
                     self.on_ai_msg(kind, v)
+                else:
+                    self.on_other_msg(kind, v)
             if frame:
                 self.show_frame(*frame)
         except Exception as e:
@@ -2274,6 +2285,9 @@ class Studio(ctk.CTkFrame):
                 open_path(v)
             except Exception:
                 pass
+
+    def on_other_msg(self, kind, v):
+        """Messages of a sub-class (Viral Clips)."""
 
     def on_ai_msg(self, kind, v):
         if kind == "alog":

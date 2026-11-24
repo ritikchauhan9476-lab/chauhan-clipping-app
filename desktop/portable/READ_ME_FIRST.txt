@@ -15,13 +15,14 @@ Projects are saved in the "projects" folder, exported videos in "exported_clips"
 To update to a newer version later, replace only the .py files - or just extract the new zip over this folder.
 run_check.bat = checks that everything works (optional).
 
-NEW: PEAKCUT TAB (AI clips from YouTube links and movies)
-- Put this folder in a SHORT place, for example C:\ChauhanClipping (Windows cannot load PeakCut's speech
-  library from very long folder paths).
-- Open the "PeakCut (AI clips)" tab and press START PEAKCUT. It opens in your web browser.
-- First time: in PeakCut go to Settings, AI, choose a service, paste your key, press "Save and test".
-  Without a key PeakCut still makes clips (it picks the loudest moments).
-- Everything is included: the speech model, FFmpeg, the YouTube downloader. Nothing to install.
+NEW: VIRAL CLIPS (AI) TAB - movie / YouTube video / live stream to ready-to-post clips
+- Choose a movie (Browse... or YouTube link), press FIND VIRAL CLIPS. The movie is worked on in parts: the clips
+  of part 1 are exported while part 2 is already being listened to.
+- Built-in works offline without a key. For AI-picked moments, titles and hashtags choose a service in the
+  "AI Clips" tab (Google Gemini and Groq have free keys) and paste the key.
+- Word-by-word captions, hook title, follow-the-speaker / facecam / interview layouts, cover + post text,
+  and every edit of the section (colour, crop, overlay, text, effects, silence / dialogue cut, export quality).
 
-NEW: "YouTube link" button (Simple Edit / AI Clipping)
+NEW: "YouTube link" button (Simple Edit / AI Clipping / Viral Clips)
 - Paste a YouTube / Instagram / Facebook / X link, the video is downloaded into input_movies and opened.
+  Its captions are saved next to it (Viral Clips can use them instead of Whisper).
