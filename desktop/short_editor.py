@@ -323,7 +323,7 @@ class ShortEditor(ctk.CTkToplevel):
     # ================================================================ still preview
     def settings(self):
         n = self.short["number"]
-        return E.sanitize(self.job.settings_for(self.m.as_pieces(), n))
+        return E.sanitize(self.job.settings_for(self.m.as_pieces(), n, self.short.get("words")))
 
     def schedule_still(self):
         if self.playing:

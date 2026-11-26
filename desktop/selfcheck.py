@@ -50,7 +50,7 @@ def t_silence_windows():
 
 def t_modules():
     import engine, dialogue, colour, project, model, scoring, preview, widgets, auto_short, auto_short_ui, studio  # noqa: F401
-    import viral, viral_ui, ytdl, captions, captions_ui, tracks, tracks_ui, short_model, short_editor, pq  # noqa: F401
+    import viral, viral_ui, ytdl, captions, captions_ui, tracks, tracks_ui, short_model, short_editor, pq, smartcut  # noqa: F401
     import cv2  # noqa: F401  (faces for the Viral Clips layouts)
     import app  # noqa: F401
 
@@ -928,6 +928,79 @@ def t_preview_quality():
     return "frames/s: " + ", ".join(f"{k} {v:.0f}" for k, v in speed.items()) + f"; play switched {small}p -> {big}p"
 
 
+def t_smart_edit():
+    """Auto Short AI smart edit: words heard (stand-in speech + AI service), silence cut between words with breaths
+    kept, AI cut of a stammered line, AI captions in Devanagari on the shorts, every switch saved in the project."""
+    import json, threading, http.server
+    import app as A
+    import engine as E
+    import auto_short as AS
+    import smartcut as SCX
+    sc = SCX.SmartCut(dict(smart=True, fillers=True, ai_cut=False, captions=True), {"provider": "offline"}, print)
+    words = [("Hello", 1.0, 1.3), ("there", 1.4, 1.7), ("umm", 2.6, 2.9), ("friend.", 3.0, 3.4), ("This", 5.0, 5.2),
+             ("is", 5.25, 5.4), ("great.", 5.5, 5.9)]
+    regs, cw = sc.refine([(0.8, 6.2)], words, 0, 10)
+    assert len(regs) == 3 and regs[0][1] < 2.6 and all(not (r[0] < 2.75 < r[1]) for r in regs), regs
+    seen = {}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            seen[self.path] = seen.get(self.path, 0) + 1
+            if self.path.endswith("/audio/transcriptions"):
+                ws, t = [], 0.2
+                for k in range(60):
+                    ws.append({"word": ("umm" if k % 15 == 7 else f"w{k}") + ("." if k % 6 == 5 else ""),
+                               "start": t, "end": t + 0.3})
+                    t += 0.45 if k % 6 != 5 else 1.2
+                d = {"words": ws}
+            else:
+                d = {"choices": [{"message": {"content": json.dumps({"cut": [1], "lines": [{"id": 0, "text": "नमस्ते दोस्तों"}]})}}]}
+            o = json.dumps(d).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(o)))
+            self.end_headers()
+            self.wfile.write(o)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}/v1"
+    cpu = [c for c in E.CODECS if "CPU" in c][0]
+    s = E.sanitize({"resolution": "480p", "codec": cpu, "rate_mode": E.RATE_MODES[0], "bitrate": 2000, "aspect": "9:16"})
+    vm = _viral_movie()
+    got = []
+    opts = dict(denoise=False, vad=True, smart_edit=dict(smart=True, ai_cut=True, fillers=True, captions=True,
+                                                          script="Hindi (Devanagari)", speech="cloud",
+                                                          cap_style="Hindi neon"),
+                ai={"provider": "custom", "base": base, "stt": "whisper-1"})
+    job = AS.AutoShortJob(vm, [(0, 40)], opts, s, [], os.path.join(tmp, "as_smart"), lambda *_: None,
+                          lambda *a: None, got.append, min_len=8, max_len=14, review=True)
+    job.run()
+    srv.shutdown()
+    assert seen.get("/v1/audio/transcriptions") and seen.get("/v1/chat/completions"), seen
+    assert got and got[0].get("words"), got[:1]
+    assert any("नमस्ते" in w[0] for w in got[0]["words"]), got[0]["words"][:5]
+    S = job.settings_for([tuple(p) for p in got[0]["pieces"]], 1, got[0]["words"])
+    assert S.get("_captions") and S["_captions"]["style"] == "Hindi neon"
+    path = job.export_planned([tuple(p) for p in got[0]["pieces"]], got[0]["number"], words=got[0]["words"])
+    assert path and os.path.isfile(path)
+    # the switches in the window, saved with the project
+    w = A.App()
+    w.update()
+    af = w.auto_short
+    af.ai_v["smart"].set(True)
+    af.ai_v["captions"].set(True)
+    af.ai_v["script"].set("Hinglish (Roman letters)")
+    st = af.get_state()
+    af.ai_v["smart"].set(False)
+    af.set_state(st)
+    assert af.ai_v["smart"].get() and af.smart_opts()["script"] == "Hinglish (Roman letters)"
+    w.destroy()
+    return f"refine OK; {len(got)} short(s) planned with AI cut + Devanagari captions; exported; switches saved"
+
+
 def t_youtube():
     """yt-dlp + deno are in the folder. A real YouTube download is tried; YouTube often blocks cloud machines, so a
     refusal there is only reported."""
@@ -1048,6 +1121,7 @@ step("Captions from SRT (styles, preview, export, pieces)", t_captions)
 step("Auto Short: check + edit on the timeline before export", t_short_editor)
 step("CC presets (HDR CC, LUT, before / after)", t_cc_presets)
 step("Preview quality (Full / 1/2 / 1/4 / 1/8)", t_preview_quality)
+step("Auto Short AI smart edit (cut by words, AI captions)", t_smart_edit)
 step("YouTube link download (yt-dlp + deno)", t_youtube)
 step("silence cut, one part at a time (AI Clipping)", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)

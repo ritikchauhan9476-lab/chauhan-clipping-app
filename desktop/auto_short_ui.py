@@ -167,6 +167,8 @@ class AutoShortFrame(ctk.CTkFrame):
              "onto a real shot change (a little slower). The detector is the Silero AI model (run install_ai.bat once); without it a simpler "
              "built-in detector is used.")
 
+        self.build_ai_edit(f, head, note)
+
         head("KEEP VIEWERS WATCHING (retention boost)")
         self.bo = {}
         for key, text, default in (
@@ -203,7 +205,105 @@ class AutoShortFrame(ctk.CTkFrame):
                     minsil=float(self.minsil.get()), denoise=bool(self.denoise.get()),
                     min_piece=float(self.minpiece.get()), scan_picture=bool(self.scan_pic.get()),
                     tail=float(self.tail.get()), mincut=float(self.mincut.get()), vthr=float(self.vthr.get()),
-                    boost=self.boost_opts(True))
+                    boost=self.boost_opts(True), smart_edit=self.smart_opts())
+
+    # ---------------- AI smart edit (silence cut by meaning + AI captions), each part on / off
+    def build_ai_edit(self, f, head, note):
+        import viral as V
+        import captions as CAP
+        import smartcut
+        head("AI SMART EDIT (Hindi / English)")
+        self.ai_v = {}
+        v = self.ai_v
+
+        def check(key, text, val):
+            v[key] = ctk.BooleanVar(value=val)
+            ctk.CTkCheckBox(f, text=text, variable=v[key], text_color=TEXT).pack(anchor="w", padx=8, pady=2)
+
+        def row(label, make):
+            r = ctk.CTkFrame(f, fg_color="transparent")
+            r.pack(fill="x", padx=8, pady=2)
+            ctk.CTkLabel(r, text=label, text_color=TEXT, width=120, anchor="w").pack(side="left")
+            w = make(r)
+            w.pack(side="left", fill="x", expand=True)
+            return w
+
+        def menu(key, label, values, val):
+            v[key] = ctk.StringVar(value=val if val in values else values[0])
+            row(label, lambda r: ctk.CTkOptionMenu(r, values=list(values), variable=v[key], dynamic_resizing=False))
+
+        check("smart", "AI smart cut: cut silence like a human editor (never inside a word, breaths kept)", False)
+        check("ai_cut", "Let the AI cut stammering, false starts and repeats", True)
+        check("fillers", "Remove filler sounds (umm, aa, uh)", True)
+        check("captions", "AI captions on every short (from the heard words)", False)
+        menu("cap_style", "Caption style", list(CAP.STYLES), next(iter(CAP.STYLES)))
+        menu("cap_pos", "Caption place", list(CAP.POSITIONS), "Lower third")
+        menu("script", "Caption letters", smartcut.SCRIPTS, smartcut.SCRIPTS[0])
+        ai = dict((self.app.prefs or {}).get("viral_ai") or {})
+        labels = [x["label"] for x in V.PROVIDERS.values()]
+        cur = V.PROVIDERS.get(ai.get("provider") or "offline", V.PROVIDERS["offline"])["label"]
+        menu("provider", "AI service", labels, cur)
+        v["key"] = ctk.StringVar(value=ai.get("key", ""))
+        row("Key", lambda r: ctk.CTkEntry(r, textvariable=v["key"], show="*", placeholder_text="paste your key"))
+        v["model"] = ctk.StringVar(value=ai.get("model", ""))
+        row("Model", lambda r: ctk.CTkEntry(r, textvariable=v["model"], placeholder_text="empty = default"))
+        menu("speech", "Words from", list(V.SPEECH.values())[:1] + [V.SPEECH["cloud"], V.SPEECH["gemini"]],
+             V.SPEECH["local"])
+        menu("whisper", "Whisper model", E.WHISPER, "small")
+        v["lang"] = ctk.StringVar(value="hi")
+        row("Speech language", lambda r: ctk.CTkEntry(r, textvariable=v["lang"], placeholder_text="hi, en or auto"))
+        r = ctk.CTkFrame(f, fg_color="transparent")
+        r.pack(fill="x", padx=8, pady=2)
+        ctk.CTkButton(r, text="Test the key", width=110, command=self.test_ai_key).pack(side="left")
+        self.ai_test_lbl = ctk.CTkLabel(r, text="", text_color=GREY, anchor="w", wraplength=220, justify="left")
+        self.ai_test_lbl.pack(side="left", padx=6)
+        for k in ("provider", "key", "model"):
+            v[k].trace_add("write", lambda *a: self.save_ai_prefs())
+        note("Smart cut hears every word (Whisper on this PC understands Hindi + English, no internet needed) and "
+             "cuts only real pauses: a breath inside a sentence stays, a pause after a sentence is cut with a little "
+             "natural gap - so it feels edited by hand. With an AI service (free: Google Gemini from "
+             "aistudio.google.com, or Groq; or Ollama / LM Studio on this PC without internet) the AI also reads the "
+             "lines, cuts stammering / repeats and can write the captions in Devanagari, Roman Hinglish or English. "
+             "The same key is used in Viral Clips. Everything off = the normal talking detection, as before.")
+
+    def ai_settings(self):
+        import viral as V
+        v = self.ai_v
+        prov = V.PROVIDER_BY_LABEL.get(v["provider"].get(), "offline")
+        old = dict((self.app.prefs or {}).get("viral_ai") or {})
+        return dict(old, provider=prov, key=v["key"].get().strip(), model=v["model"].get().strip())
+
+    def save_ai_prefs(self):
+        try:
+            self.app.prefs["viral_ai"] = self.ai_settings()
+            import project as PRJ
+            PRJ.write_prefs(self.app.prefs)
+        except Exception:
+            pass
+
+    def smart_opts(self):
+        import viral as V
+        v = self.ai_v
+        return dict(smart=bool(v["smart"].get()), ai_cut=bool(v["ai_cut"].get()), fillers=bool(v["fillers"].get()),
+                    captions=bool(v["captions"].get()), cap_style=v["cap_style"].get(), cap_pos=v["cap_pos"].get(),
+                    script=v["script"].get(), speech=V.SPEECH_BY_LABEL.get(v["speech"].get(), "local"),
+                    whisper_model=v["whisper"].get(), lang=v["lang"].get().strip())
+
+    def test_ai_key(self):
+        import viral as V
+        ai = self.ai_settings()
+        if ai["provider"] == "offline":
+            self.ai_test_lbl.configure(text="Built-in: no AI service, no key needed.")
+            return
+        self.ai_test_lbl.configure(text="Testing ...")
+
+        def work():
+            try:
+                msg = "The key works." if V.test_key(ai) else "The AI answered, but not as expected."
+            except Exception as e:
+                msg = str(e)[:200]
+            self.q.put(("aitest", msg))
+        threading.Thread(target=work, daemon=True).start()
 
     def boost_opts(self, always=False):
         """Retention boost settings. Empty dict = everything off (unless always: for saving the project)."""
@@ -236,6 +336,18 @@ class AutoShortFrame(ctk.CTkFrame):
         self.mincut.set(float(st.get("mincut", 500)))
         self.vthr.set(float(st.get("vthr", 0.45)))
         self.scan_pic.set(bool(st.get("scan_picture", True)))
+        so = st.get("smart_edit") or {}
+        import viral as V
+        for k in ("smart", "ai_cut", "fillers", "captions"):
+            if k in so:
+                self.ai_v[k].set(bool(so[k]))
+        for k in ("cap_style", "cap_pos", "script", "lang"):
+            if so.get(k):
+                self.ai_v[k].set(str(so[k]))
+        if so.get("whisper_model"):
+            self.ai_v["whisper"].set(so["whisper_model"])
+        if so.get("speech") in V.SPEECH:
+            self.ai_v["speech"].set(V.SPEECH[so["speech"]])
         bo = st.get("boost") or {}
         for k, v in self.bo.items():
             v.set(bool(bo.get(k, True)))
@@ -324,7 +436,8 @@ class AutoShortFrame(ctk.CTkFrame):
         cap = sm.cap_full()
         if cap:
             s["_captions"] = cap
-        opts = dict(denoise=bool(self.denoise.get()), boost=self.boost_opts())
+        opts = dict(denoise=bool(self.denoise.get()), boost=self.boost_opts(), smart_edit=self.smart_opts(),
+                    ai=self.ai_settings())
         self.out_dir = self.out_dir or os.path.join(E.OUTPUT_DIR, f"{sm.file_base()}_auto_short")
         self.exporter = auto_short.AutoShortJob(sm.movie, [], opts, s, copy.deepcopy(sm.items), self.out_dir,
                                                 self.log, lambda *a: None, lambda d: None,
@@ -397,7 +510,7 @@ class AutoShortFrame(ctk.CTkFrame):
             while self.export_queue and not exp.stopped:
                 d = self.export_queue.pop(0)
                 try:
-                    path = exp.export_planned([tuple(p) for p in d["pieces"]], d["number"])
+                    path = exp.export_planned([tuple(p) for p in d["pieces"]], d["number"], words=d.get("words"))
                 except Exception:
                     self.log("ERROR:\n" + traceback.format_exc())
                     path = None
@@ -493,7 +606,17 @@ class AutoShortFrame(ctk.CTkFrame):
                         denoise=bool(self.denoise.get()), vad=True, min_piece=float(self.minpiece.get()),
                         scan_picture=bool(self.scan_pic.get()), boost=self.boost_opts(),
                         tail_ms=int(self.tail.get()), min_cut_ms=int(self.mincut.get()),
-                        vad_threshold=float(self.vthr.get()))
+                        vad_threshold=float(self.vthr.get()), smart_edit=self.smart_opts(), ai=self.ai_settings())
+            so, ai = opts["smart_edit"], opts["ai"]
+            if so["smart"] or so["captions"]:
+                if so["speech"] == "gemini" and ai["provider"] != "gemini":
+                    raise ValueError("'Gemini listens' needs the AI service Google Gemini and its key.")
+                if so["speech"] == "cloud" and ai["provider"] not in ("groq", "openai", "custom", "gemini"):
+                    raise ValueError("Cloud speech-to-text needs the service Groq, OpenAI or Gemini (with its key).")
+                if ai["provider"] not in ("offline", "ollama", "lmstudio", "custom") and not ai["key"] and \
+                        (so["ai_cut"] or so["speech"] != "local" or so["script"] != "As spoken"):
+                    raise ValueError("Paste the key of the AI service (AI SMART EDIT), or choose "
+                                     "'Built-in (offline, no key)'.")
         except ValueError as e:
             messagebox.showerror("Auto Short", str(e) if str(e) and "could not convert" not in str(e)
                                  else "Please enter the Start / End values as numbers.")
@@ -574,6 +697,8 @@ class AutoShortFrame(ctk.CTkFrame):
                         self.add_plan_row(dict(v))
                     else:
                         self.add_short_row(v)
+                elif kind == "aitest":
+                    self.ai_test_lbl.configure(text=v)
                 elif kind == "exported":
                     d, path = v
                     d["busy"] = False
