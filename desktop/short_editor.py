@@ -57,6 +57,8 @@ class ShortEditor(ctk.CTkToplevel):
         self.renderer = P.Renderer(lambda img, tok, err: self.rq.put((img, tok, err)))
         self.wave_ready = False
         self.env = None                  # sound wave of the movie strip
+        self.env_span = None
+        self.view = None                 # the movie stretch shown on the strip (None = around the short)
         self.span = self.calc_span()
         self.photo = None
         self.render_after = None
@@ -95,17 +97,22 @@ class ShortEditor(ctk.CTkToplevel):
         self.sel_lbl.pack(anchor="w", padx=10, pady=(6, 4))
         for text, cmd, kw in (("Split at playhead  (S)", self.do_split, {}),
                               ("Delete piece  (Del)", self.do_delete, dict(fg_color=DANGER, hover_color=DANGER_H)),
-                              ("Bring back the chosen cut part", self.do_bring_back, {}),
+                              ("+ Add a new part from the movie", self.do_add_dialog, {}),
+                              ("Add the chosen movie part at playhead", self.do_add_chosen, {}),
+                              ("Bring back the chosen cut part (in place)", self.do_bring_back,
+                               dict(fg_color=QUIET, hover_color=QUIET_H)),
                               ("Move piece left", lambda: self.do_move(-1), dict(fg_color=QUIET, hover_color=QUIET_H)),
                               ("Move piece right", lambda: self.do_move(1), dict(fg_color=QUIET, hover_color=QUIET_H)),
                               ("Undo  (Ctrl+Z)", self.do_undo, dict(fg_color=QUIET, hover_color=QUIET_H)),
                               ("Redo  (Ctrl+Y)", self.do_redo, dict(fg_color=QUIET, hover_color=QUIET_H)),
                               ("Back to the automatic cut", self.do_reset, dict(fg_color=QUIET, hover_color=QUIET_H))):
             ctk.CTkButton(side, text=text, command=cmd, text_color=TEXT, **kw).pack(fill="x", padx=10, pady=3)
-        ctk.CTkLabel(side, text="Drag the EDGE of a piece outward to bring back what was cut, inward to cut more. "
-                                "Drag the middle of a piece to move it. Click the movie strip on a dark (cut) part, "
-                                "or drag over it, then 'Bring back'.", text_color=GREY, wraplength=280,
-                     justify="left").pack(anchor="w", padx=10, pady=(8, 4))
+        ctk.CTkLabel(side, text="Drag the EDGE of a piece outward to bring back what was cut (the short gets longer, "
+                                "the other pieces stay as they are), inward to cut more. Drag the middle of a piece "
+                                "to move it. New part: drag over ANY part of the MOVIE strip and press 'Add the "
+                                "chosen movie part at playhead', or use '+ Add a new part' with times. The arrows "
+                                "above the movie strip move it through the whole movie.", text_color=GREY,
+                     wraplength=280, justify="left").pack(anchor="w", padx=10, pady=(8, 4))
         # transport
         tr = ctk.CTkFrame(self, fg_color="transparent")
         tr.grid(row=1, column=0, sticky="ew", padx=8)
@@ -125,8 +132,15 @@ class ShortEditor(ctk.CTkToplevel):
         self.note = ctk.CTkLabel(tr, text="", text_color=GREY, anchor="w")
         self.note.pack(side="left", padx=12, fill="x", expand=True)
         # movie strip + short timeline
-        ctk.CTkLabel(self, text="MOVIE (green = in the short, dark = cut out)", text_color=GREY, anchor="w",
-                     font=ctk.CTkFont(size=11)).grid(row=2, column=0, sticky="w", padx=10, pady=(6, 0))
+        mrow = ctk.CTkFrame(self, fg_color="transparent")
+        mrow.grid(row=2, column=0, sticky="ew", padx=8, pady=(6, 0))
+        ctk.CTkLabel(mrow, text="MOVIE (green = in the short, dark = not in it - drag over it to choose a part)",
+                     text_color=GREY, anchor="w", font=ctk.CTkFont(size=11)).pack(side="left", padx=2)
+        for txt, cmd in (("Whole movie", self.span_whole), ("Around the short", self.span_reset),
+                         ("Zoom in", lambda: self.span_zoom(0.5)), ("Zoom out", lambda: self.span_zoom(2.0)),
+                         ("▶", lambda: self.span_shift(0.5)), ("◀", lambda: self.span_shift(-0.5))):
+            ctk.CTkButton(mrow, text=txt, width=40 if len(txt) < 3 else 96, height=24, fg_color=QUIET,
+                          hover_color=QUIET_H, text_color=TEXT, command=cmd).pack(side="right", padx=2)
         self.strip = tk.Canvas(self, height=70, bg="#15171A", highlightthickness=0)
         self.strip.grid(row=3, column=0, sticky="ew", padx=8)
         ctk.CTkLabel(self, text="SHORT TIMELINE", text_color=GREY, anchor="w",
@@ -167,6 +181,8 @@ class ShortEditor(ctk.CTkToplevel):
 
     # ================================================================ geometry helpers
     def calc_span(self):
+        if self.view:
+            return self.view
         lo = min(s for s, _ in self.m.p)
         hi = max(e for _, e in self.m.p)
         pad = max(10.0, (hi - lo) * 0.15)
@@ -193,9 +209,47 @@ class ShortEditor(ctk.CTkToplevel):
         return (x - 6 + self.scroll_x) / self.px_per_sec()
 
     # ================================================================ sound wave
+    # ---------------- moving the movie strip through the movie
+    def set_view(self, a, b):
+        dur = self.info["duration"]
+        L = min(dur, max(5.0, b - a))
+        a = min(max(0.0, a), max(0.0, dur - L))
+        self.view = (a, a + L)
+        self.span = self.view
+        self.redraw()
+        if L <= 900:
+            self.load_wave()
+        else:
+            self.env = None
+
+    def span_whole(self):
+        self.set_view(0.0, self.info["duration"])
+
+    def span_reset(self):
+        self.view = None
+        self.span = self.calc_span()
+        self.redraw()
+        self.load_wave()
+
+    def span_zoom(self, k):
+        a, b = self.span
+        c, L = (a + b) / 2, (b - a) * k
+        self.set_view(c - L / 2, c + L / 2)
+
+    def span_shift(self, k):
+        a, b = self.span
+        L = b - a
+        self.set_view(a + L * k, b + L * k)
+
     def load_wave(self):
         import threading
         a, b = self.span
+        if b - a > 900:
+            self.env = None
+            return
+        if self.env is not None and self.env_span == (a, b):
+            return
+        self.env, self.env_span = None, (a, b)
 
         def work():
             try:
@@ -262,8 +316,9 @@ class ShortEditor(ctk.CTkToplevel):
             n = len(self.env)
             step = max(1, int(n / max(1, w)))
             pts = []
+            ea = self.env_span[0] if self.env_span else a
             for x in range(0, w, 2):
-                k = int((self.strip_t(x) - a) * 20)
+                k = int((self.strip_t(x) - ea) * 20)
                 if 0 <= k < n:
                     v = float(self.env[max(0, k - step // 2):k + step // 2 + 1].max())
                     pts.append((x, v))
@@ -513,6 +568,73 @@ class ShortEditor(ctk.CTkToplevel):
             self.sel = min(k, len(self.m.p) - 1)
         self.edited()
 
+    def do_add_chosen(self):
+        """The movie part chosen on the strip becomes a new piece at the playhead."""
+        self.stop_play()
+        if not self.gap_sel:
+            self.note.configure(text="First drag over a part of the MOVIE strip (use the arrows / 'Whole movie' to go "
+                                     "anywhere in the movie).")
+            return
+        k = self.m.insert(self.gap_sel[0], self.gap_sel[1], self.t)
+        if k is not None:
+            self.sel = k
+            self.t = self.m.starts()[k]
+        self.gap_sel = None
+        self.edited()
+
+    def do_add_dialog(self):
+        """'+ Add a new part': type the movie times (mm:ss or seconds) and where it goes."""
+        self.stop_play()
+        win = ctk.CTkToplevel(self)
+        win.title("Add a new part")
+        win.geometry("420x260")
+        win.transient(self)
+        a0, b0 = self.gap_sel or (self.m.locate(self.t)[1], min(self.info["duration"], self.m.locate(self.t)[1] + 5))
+        ctk.CTkLabel(win, text="Movie part to add (minutes:seconds or seconds)", text_color=TEXT).pack(padx=12,
+                                                                                                    pady=(12, 6))
+        r = ctk.CTkFrame(win, fg_color="transparent")
+        r.pack(padx=12, pady=4)
+        ctk.CTkLabel(r, text="From").pack(side="left")
+        ea = ctk.CTkEntry(r, width=110)
+        ea.insert(0, tstr(a0))
+        ea.pack(side="left", padx=6)
+        ctk.CTkLabel(r, text="To").pack(side="left")
+        eb = ctk.CTkEntry(r, width=110)
+        eb.insert(0, tstr(b0))
+        eb.pack(side="left", padx=6)
+        where = tk.StringVar(value="At the playhead")
+        ctk.CTkOptionMenu(win, values=["At the playhead", "At the start", "At the end"], variable=where).pack(pady=6)
+        msg = ctk.CTkLabel(win, text="", text_color="#FFB347")
+        msg.pack()
+
+        def secs(txt):
+            txt = txt.strip()
+            if ":" in txt:
+                parts = [float(x) for x in txt.split(":")]
+                v = 0.0
+                for x in parts:
+                    v = v * 60 + x
+                return v
+            return float(txt)
+
+        def go():
+            try:
+                a, b = secs(ea.get()), secs(eb.get())
+            except ValueError:
+                msg.configure(text="Please type times like 12:30 or 750.")
+                return
+            if b - a < 0.2:
+                msg.configure(text="'To' must be after 'From'.")
+                return
+            t = {"At the playhead": self.t, "At the start": 0.0, "At the end": None}[where.get()]
+            k = self.m.insert(a, b, t)
+            win.destroy()
+            if k is not None:
+                self.sel = k
+                self.t = self.m.starts()[k]
+            self.edited()
+        ctk.CTkButton(win, text="ADD", command=go).pack(pady=8)
+
     def do_undo(self):
         self.stop_play()
         if self.m.undo():
@@ -548,36 +670,39 @@ class ShortEditor(ctk.CTkToplevel):
     # ---------------- movie strip mouse
     def strip_down(self, e):
         self.stop_play()
-        t = self.strip_t(e.x)
-        for i, (s, en) in enumerate(self.m.p):
+        self.drag = dict(kind="range", t0=self.strip_t(e.x), x0=e.x, moved=False)
+
+    def strip_move(self, e):
+        d = self.drag
+        if d and d.get("kind") == "range":
+            if abs(e.x - d["x0"]) > 4:
+                d["moved"] = True
+            if d["moved"]:
+                a, b = sorted((d["t0"], self.strip_t(e.x)))
+                self.gap_sel = (max(self.span[0], a), min(self.span[1], b))
+                self.update_labels()
+                self.draw_strip()
+
+    def strip_up(self, e):
+        d = self.drag
+        self.drag = None
+        if not d or d.get("kind") != "range":
+            return
+        if d["moved"] and self.gap_sel and self.gap_sel[1] - self.gap_sel[0] >= 0.2:
+            self.update_labels()          # any part of the movie (also one already in the short) is chosen
+            self.draw_strip()
+            return
+        t = d["t0"]
+        for i, (s, en) in enumerate(self.m.p):     # a click on a green part: that piece
             if s <= t <= en:
                 self.sel = i
                 self.gap_sel = None
                 self.seek(self.m.out_of(t) or 0.0)
-                self.drag = None
                 return
-        self.drag = dict(kind="gap", t0=t)
-        self.gap_sel = None
-
-    def strip_move(self, e):
-        if self.drag and self.drag.get("kind") == "gap":
-            a, b = sorted((self.drag["t0"], self.strip_t(e.x)))
-            self.gap_sel = (max(self.span[0], a), min(self.span[1], b))
-            self.draw_strip()
-
-    def strip_up(self, e):
-        if self.drag and self.drag.get("kind") == "gap":
-            t = self.drag["t0"]
-            if not self.gap_sel or self.gap_sel[1] - self.gap_sel[0] < 0.2:
-                g = [x for x in self.m.gaps(*self.span) if x[0] <= t <= x[1]]
-                self.gap_sel = g[0] if g else None
-            else:   # only the cut-out part of what was dragged over
-                a, b = self.gap_sel
-                g = [(max(a, x), min(b, y)) for x, y in self.m.gaps(*self.span) if y > a and x < b]
-                self.gap_sel = (min(x for x, _ in g), max(y for _, y in g)) if g else None
-            self.drag = None
-            self.update_labels()
-            self.draw_strip()
+        g = [x for x in self.m.gaps(*self.span) if x[0] <= t <= x[1]]   # a click on a dark part: that cut part
+        self.gap_sel = g[0] if g else None
+        self.update_labels()
+        self.draw_strip()
 
     # ---------------- short timeline mouse
     def hit(self, x, y):
@@ -587,9 +712,10 @@ class ShortEditor(ctk.CTkToplevel):
         acc = 0.0
         for i, (s, e) in enumerate(self.m.p):
             x0, x1 = self.tl_x(acc), self.tl_x(acc + e - s)
-            if abs(x - x0) <= 7 and (i == 0 or x - x0 >= -1):
+            grip = max(3.0, min(8.0, (x1 - x0) / 3))          # each piece has its own edge handles, inside it
+            if x0 - (3 if i == 0 else 0) <= x <= x0 + grip:
                 return ("l", i)
-            if abs(x - x1) <= 7:
+            if x1 - grip <= x <= x1 + (3 if i == len(self.m.p) - 1 else 0):
                 return ("r", i)
             if x0 < x < x1:
                 return ("body", i)
@@ -652,7 +778,6 @@ class ShortEditor(ctk.CTkToplevel):
         if d["kind"] == "edge":
             if self.m.p == d["orig"]:
                 self.m.undo_stack.pop() if self.m.undo_stack else None
-            self.m.join()
             if d["side"] == "l":
                 self.t = self.m.starts()[min(d["i"], len(self.m.p) - 1)]
             self.edited()

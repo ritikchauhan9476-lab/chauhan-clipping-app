@@ -102,7 +102,7 @@ class ShortModel:
 
     def set_edge(self, i, side, src, snap=True):
         """Move the start (side 'l') or end ('r') of piece i to movie time src. Moving it outward brings back what
-        was cut there. Pieces that meet again in the movie are joined."""
+        was cut there and makes the short longer; the pieces next to it are NOT changed (like CapCut)."""
         if snap:
             self.snap()
         s, e = self.p[i]
@@ -110,7 +110,29 @@ class ShortModel:
             self.p[i][0] = min(max(0.0, src), e - MIN_PIECE)
         else:
             self.p[i][1] = max(min(self.dur, src), s + MIN_PIECE)
-        self.join()
+
+    def insert(self, a, b, t=None):
+        """Adds the movie stretch a..b as a new piece, at short time t (the piece under t is split there),
+        or at the end (t None). Returns the new piece's index."""
+        a, b = max(0.0, float(a)), min(self.dur, float(b))
+        if b - a < MIN_PIECE:
+            return None
+        self.snap()
+        if t is None or not self.p:
+            k = len(self.p)
+        else:
+            i, src = self.locate(t)
+            st = self.starts()[i]
+            s, e = self.p[i]
+            if t <= st + 0.05:
+                k = i
+            elif t >= st + (e - s) - 0.05:
+                k = i + 1
+            else:
+                self.p[i:i + 1] = [[s, src], [src, e]]
+                k = i + 1
+        self.p.insert(k, [a, b])
+        return k
 
     def move(self, i, j):
         """Move piece i so that it plays at position j."""

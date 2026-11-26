@@ -799,6 +799,23 @@ def t_short_editor():
     ed.tl_move(e)
     ed.tl_up(e)
     assert m.total > before + 0.2, (before, m.total, m.p)
+    # dragging the right edge of the FIRST piece: the short gets longer, the next piece stays as it was
+    nxt0 = list(m.p[1])
+    e.x, e.y = int(ed.tl_x(m.starts()[1])) - 3, 60
+    t0_total = m.total
+    ed.tl_down(e)
+    e.x += 30
+    ed.tl_move(e)
+    ed.tl_up(e)
+    assert m.p[1] == nxt0 and m.total > t0_total + 0.1, (nxt0, m.p)
+    # a new part from anywhere in the movie, at the playhead
+    ed.span_whole()
+    ed.seek(1.0)
+    ed.gap_sel = (0.2, 0.9)
+    n_before, tot_before = len(m.p), m.total
+    ed.do_add_chosen()
+    assert len(m.p) >= n_before + 1 and abs(m.total - tot_before - 0.7) < 0.05, (m.p, m.total)
+    ed.span_reset()
     # bring back a cut part chosen on the movie strip
     gaps = m.gaps(*ed.span)
     ed.gap_sel = [g for g in gaps if g[0] >= 2.0][0]
