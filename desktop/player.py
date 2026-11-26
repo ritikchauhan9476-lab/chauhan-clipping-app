@@ -50,13 +50,26 @@ class LivePlayer:
                     self.sound = False
             if token != self._n or not self.active:
                 return
-            try:
-                self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                             creationflags=E.NOWIN, bufsize=0)
-            except Exception as e:
-                self.error = str(e)
+            idx = self._read(cmd, token)
+            if idx == 0 and "-hwaccel" in cmd and token == self._n and self.active:
+                # no picture with GPU decoding (old driver ...): the same without it
+                k = cmd.index("-hwaccel")
+                self.error = ""
+                idx = self._read(cmd[:k] + cmd[k + 2:], token)
+            if token == self._n:
                 self.done_reading = True
-                return
+        self.reader = threading.Thread(target=work, daemon=True)
+        self.reader.start()
+
+    def _read(self, cmd, token):
+        """Runs the preview command and queues its frames. Returns how many frames came."""
+        try:
+            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                         creationflags=E.NOWIN, bufsize=0)
+        except Exception as e:
+            self.error = str(e)
+            return 0
+        if True:
             w, h = self.live["w"], self.live["h"]
             size, idx = w * h * 3, 0
             out = self.proc.stdout
@@ -83,9 +96,7 @@ class LivePlayer:
                         self.error = err[-400:]
                 except Exception:
                     pass
-                self.done_reading = True
-        self.reader = threading.Thread(target=work, daemon=True)
-        self.reader.start()
+            return idx
 
     def stop(self):
         self.active = False

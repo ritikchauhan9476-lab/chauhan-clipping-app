@@ -515,6 +515,8 @@ class App(ctk.CTk):
         self.last_autosave = time.time()
         self._relocated = {}
         self.prefs = PRJ.read_prefs()
+        import pq
+        pq.init(self.prefs, PRJ.write_prefs)            # preview quality (Full / 1/2 / 1/4 / 1/8), for every preview
         self.build_project_bar()
         self.tabs = ctk.CTkTabview(self)
         self.tabs.grid(row=1, column=0, sticky="nsew", padx=8, pady=(6, 8))
@@ -597,6 +599,9 @@ class App(ctk.CTk):
         ctk.CTkButton(tr, text="<", width=50, command=lambda: self.step(-1 / 25)).pack(side="left", padx=2)
         self.play_btn = ctk.CTkButton(tr, text="Play (Space)", width=130, command=self.toggle_play)
         self.play_btn.pack(side="left", padx=6)
+        import pq
+        ctk.CTkLabel(tr, text="Preview", text_color=GREY).pack(side="left", padx=(10, 2))
+        pq.menu(tr, self.schedule_render, width=70).pack(side="left")
         ctk.CTkButton(tr, text=">", width=50, command=lambda: self.step(1 / 25)).pack(side="left", padx=2)
         self.time_lbl = ctk.CTkLabel(tr, text="00:00.0 / 00:00.0", text_color=TEXT,
                                      font=ctk.CTkFont(family="Consolas", size=14))
@@ -972,7 +977,8 @@ class App(ctk.CTk):
             return
         self.token += 1
         self.sync_vars()
-        self.renderer.submit(self.movie, self.t, self.s, self.token)
+        import pq
+        self.renderer.submit(self.movie, self.t, dict(self.s, _pq=pq.factor()), self.token)
 
     def show_frame(self, img, err):
         if err:
@@ -1279,15 +1285,28 @@ class App(ctk.CTk):
     def project_tick(self):
         """Every 3 seconds: shows the * for unsaved changes and writes an autosave copy every 2 minutes."""
         try:
-            st = self.collect_state()
-            self.dirty = PRJ.fingerprint(self.content_view(st)) != self.saved_fp
-            if self.dirty and time.time() - self.last_autosave > 120:
-                PRJ.save(PRJ.autosave_path(self.project_path), st)
-                self.last_autosave = time.time()
-            self.refresh_project_label()
+            # not while a preview plays (keeps Play smooth) or while the window is minimised
+            busy = any(getattr(x, "playing", False) for x in (getattr(self, "simple", None), getattr(self, "ai", None),
+                                                               getattr(self, "viral", None)) if x is not None)
+            if not busy and self.state() != "iconic":
+                st = self.collect_state()
+                self.dirty = PRJ.fingerprint(self.content_view(st)) != self.saved_fp
+                if self.dirty and time.time() - self.last_autosave > 120 and not getattr(self, "_autosaving", False):
+                    self.last_autosave = time.time()
+                    self._autosaving = True
+                    path = PRJ.autosave_path(self.project_path)
+
+                    def save_bg(st=st, path=path):        # writing the file happens off the window's thread
+                        try:
+                            PRJ.save(path, st)
+                        except Exception:
+                            pass
+                        self._autosaving = False
+                    threading.Thread(target=save_bg, daemon=True).start()
+                self.refresh_project_label()
         except Exception:
             pass
-        self.after(3000, self.project_tick)
+        self.after(5000, self.project_tick)
 
     def startup_restore(self):
         """Opens the project you were working on when the app was closed."""

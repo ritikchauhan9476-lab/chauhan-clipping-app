@@ -16,6 +16,7 @@ from PIL import Image, ImageTk
 import captions as CAP
 import engine as E
 import player as PL
+import pq
 import preview as P
 from short_model import ShortModel
 from widgets import NEON, GREY, TEXT, QUIET, QUIET_H, DANGER, DANGER_H
@@ -119,6 +120,8 @@ class ShortEditor(ctk.CTkToplevel):
         ctk.CTkLabel(tr, text="Zoom", text_color=GREY).pack(side="left", padx=(20, 4))
         ctk.CTkButton(tr, text="-", width=34, command=lambda: self.set_zoom(self.zoom / 1.5)).pack(side="left")
         ctk.CTkButton(tr, text="+", width=34, command=lambda: self.set_zoom(self.zoom * 1.5)).pack(side="left", padx=4)
+        ctk.CTkLabel(tr, text="Preview", text_color=GREY).pack(side="left", padx=(16, 2))
+        pq.menu(tr, self.pq_changed, width=70).pack(side="left")
         self.note = ctk.CTkLabel(tr, text="", text_color=GREY, anchor="w")
         self.note.pack(side="left", padx=12, fill="x", expand=True)
         # movie strip + short timeline
@@ -358,6 +361,7 @@ class ShortEditor(ctk.CTkToplevel):
                          if o["start"] <= self.t < (o["end"] if o["end"] > o["start"] else 1e9)]
         for k in ("_boost", "_denoise", "_joint_fade"):
             s.pop(k, None)
+        s["_pq"] = pq.factor()
         self.token += 1
         self.renderer.submit(self.movie, min(src, self.info["duration"] - 0.05), s, self.token)
 
@@ -380,6 +384,18 @@ class ShortEditor(ctk.CTkToplevel):
         self.cv.create_image(cw // 2, ch // 2, image=self.photo)
 
     # ================================================================ playing
+    def pq_changed(self):
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+        if self.playing:
+            self.stop_play()
+            self.start_play()
+        else:
+            self.schedule_still()
+
     def toggle_play(self):
         if self.playing:
             self.stop_play()
@@ -405,7 +421,7 @@ class ShortEditor(ctk.CTkToplevel):
                       for x in s.get("texts") or [] if (x["end"] <= 0 or x["end"] > t0)]
         s["overlays"] = [dict(x, start=max(0.0, x["start"] - t0), end=(x["end"] - t0) if x["end"] > 0 else 0)
                          for x in s.get("overlays") or [] if (x["end"] <= 0 or x["end"] > t0)]
-        s["resolution"] = "480p"
+        s["_pq"] = pq.factor()
         s["_fast"] = True
         s.pop("_denoise", None)
         cw, ch = max(200, self.cv.winfo_width()), max(150, self.cv.winfo_height())

@@ -50,7 +50,7 @@ def t_silence_windows():
 
 def t_modules():
     import engine, dialogue, colour, project, model, scoring, preview, widgets, auto_short, auto_short_ui, studio  # noqa: F401
-    import viral, viral_ui, ytdl, captions, captions_ui, tracks, tracks_ui, short_model, short_editor  # noqa: F401
+    import viral, viral_ui, ytdl, captions, captions_ui, tracks, tracks_ui, short_model, short_editor, pq  # noqa: F401
     import cv2  # noqa: F401  (faces for the Viral Clips layouts)
     import app  # noqa: F401
 
@@ -882,6 +882,52 @@ def t_cc_presets():
     return f"{len(CL.PRESETS)} presets; 4 exported; LUT 50% / 100% OK; before / after preview OK"
 
 
+def t_preview_quality():
+    """Preview quality Full / 1/2 / 1/4 / 1/8: Play works at every setting (smaller = faster), the still picture
+    follows, one setting for every tab, remembered in the settings."""
+    import time
+    import app as A
+    import engine as E
+    import pq
+    import preview as P
+    info = E.probe_info(movie)
+    sizes, speed = {}, {}
+    for name, q in pq.QUALITIES.items():
+        s = E.sanitize({"resolution": "1080p", "aspect": "9:16", "fit_mode": "Blur background", "_pq": q, "_fast": True})
+        live = dict(box=(2000, 2000), wav=os.path.join(tmp, "pq.wav"))
+        cmd, _ = E.build_command(movie, 0.0, 4.0, "-", s, info, None, live=live)
+        t0 = time.time()
+        r = subprocess.run(cmd, capture_output=True, creationflags=E.NOWIN)
+        n = len(r.stdout) // (live["w"] * live["h"] * 3)
+        assert n > 50, (name, n, r.stderr[-300:])
+        sizes[name] = (live["w"], live["h"])
+        speed[name] = n / max(0.01, time.time() - t0)
+        img = P.compose(movie, 1.0, s, info)
+        assert img.size[1] > 100
+    assert sizes["Full"][1] == 1920 and sizes["1/2"][1] == 960 and sizes["1/4"][1] == 480 and 230 <= sizes["1/8"][1] <= 250, sizes
+    w = A.App()
+    w.update()
+    st = w.simple
+    st.load_movie(movie)
+    st.parts = [{"on": True, "sil": True, "ov": True, "start": 0.0, "end": 10.0, "label": ""}]
+    st.select_part(0)
+    pq.set_value("1/8")
+    assert w.prefs.get("preview_quality") == "1/8"
+    st.frames_shown = 0
+    st.toggle_play()
+    _pump(w, 3.0)
+    small = st.player.live.get("h")
+    pq.set_value("1/2")                                   # while playing: restarts at the new quality
+    _pump(w, 3.0)
+    big = st.player.live.get("h")
+    shown = st.frames_shown
+    st.toggle_play()
+    assert small and big and big > small and shown > 20, (small, big, shown)
+    pq.set_value(pq.DEFAULT)
+    w.destroy()
+    return "frames/s: " + ", ".join(f"{k} {v:.0f}" for k, v in speed.items()) + f"; play switched {small}p -> {big}p"
+
+
 def t_youtube():
     """yt-dlp + deno are in the folder. A real YouTube download is tried; YouTube often blocks cloud machines, so a
     refusal there is only reported."""
@@ -1001,6 +1047,7 @@ step("Audio tracks: keep / remove languages (MKVToolNix style)", t_audio_tracks)
 step("Captions from SRT (styles, preview, export, pieces)", t_captions)
 step("Auto Short: check + edit on the timeline before export", t_short_editor)
 step("CC presets (HDR CC, LUT, before / after)", t_cc_presets)
+step("Preview quality (Full / 1/2 / 1/4 / 1/8)", t_preview_quality)
 step("YouTube link download (yt-dlp + deno)", t_youtube)
 step("silence cut, one part at a time (AI Clipping)", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)

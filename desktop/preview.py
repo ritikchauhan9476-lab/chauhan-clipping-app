@@ -319,10 +319,17 @@ def compose(movie, t, s, info, short=SHORT):
             d.text((x - tw / 2, h * 0.04), txt, font=font, fill=(255, 255, 255, 255), stroke_width=max(2, fs // 10),
                    stroke_fill=(0, 0, 0, 255))
         return out
+    q = s.get("_pq")
+    fw = 960
+    if q:                                       # preview quality: Full / 1/2 / 1/4 / 1/8
+        q = max(0.1, min(1.0, float(q)))
+        qs = 1.0 if q >= 0.99 else (0.5 if q >= 0.24 else 0.25)   # the still picture: Full 1080, 1/2 + 1/4 540, 1/8 270
+        short = max(120, int(1080 * qs) // 2 * 2)
+        fw = max(240, int(1920 * qs) // 2 * 2)
     s = E.sanitize(s)
     dur = info["duration"]
     t = min(max(0.0, t), max(0.0, dur - 0.05))
-    src = geometry_img(frame_at(movie, t, 960), s)
+    src = geometry_img(frame_at(movie, t, fw), s)
     if s["chroma_on"]:
         src = chroma_comp(src, background(s, src.size, t), s)
     src = effects_img(apply_color(src, s), s)

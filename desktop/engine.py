@@ -566,7 +566,8 @@ def source_crop_box(s, sw, sh):
 
 
 def out_size(s, sw, sh):
-    short = {"480p": 480, "720p": 720, "1080p": 1080, "1440p": 1440, "2160p (4K)": 2160}.get(s["resolution"])
+    short = s.get("_pshort") or {"480p": 480, "720p": 720, "1080p": 1080, "1440p": 1440,
+                                 "2160p (4K)": 2160}.get(s["resolution"])
     if s["aspect"] == "Original":
         if short is None:
             return ev(sw), ev(sh)
@@ -1050,6 +1051,16 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
             pre.append(crop)
     geo, sw, sh = geometry_filters(s, sw, sh)
     pre += geo
+    if live:
+        # preview quality (Full / 1/2 / 1/4 / 1/8 of the export size): the output AND the picture it is made from
+        # are made smaller, so every filter has fewer pixels to work on (the export is not touched by this)
+        q = max(0.05, min(1.0, float(s.get("_pq", 0.5) or 0.5)))
+        OW0, OH0 = out_size(s, sw, sh)
+        s = dict(s, _pshort=max(64, ev(min(OW0, OH0) * q)))
+        ks = q * min(1.0, max(OW0 / max(1, sw), OH0 / max(1, sh)))
+        if ks < 0.97:
+            sw, sh = max(32, ev(sw * ks)), max(32, ev(sh * ks))
+            pre.append(f"scale={sw}:{sh}:flags=fast_bilinear")
     pre.append("setsar=1")
     fl.append(f"{vin}{','.join(pre)}[v0]")
 
@@ -1270,7 +1281,7 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
     if abs(speed - 1.0) > 1e-3:
         endf.append(f"setpts=PTS/{speed:.4f}")
     if live:                                   # live player: small RGB frames to a pipe
-        fr = min(30.0, frame_rate(info) or 25.0)
+        fr = min(60.0 if float(s.get("_pq", 0.5) or 0.5) >= 0.99 else 30.0, frame_rate(info) or 25.0)
         k = min(live["box"][0] / OW, live["box"][1] / OH, 1.0)
         live.update(w=max(2, int(OW * k) // 2 * 2), h=max(2, int(OH * k) // 2 * 2), fps=fr, speed=speed)
         endf += [f"fps={fr:.3f}", f"scale={live['w']}:{live['h']}:flags=fast_bilinear", "format=rgb24"]
@@ -1327,9 +1338,11 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
             amap = ["-map", "[aout]"]
 
     if ss_base is not None:
-        cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-ss", f"{ss_base:.3f}", "-t", f"{read_len:.3f}", "-i", movie]
+        cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error"] + (["-hwaccel", "auto"] if live else []) + \
+              ["-ss", f"{ss_base:.3f}", "-t", f"{read_len:.3f}", "-i", movie]
     else:
-        cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-ss", f"{start:.2f}", "-t", f"{dur:.2f}", "-i", movie]
+        cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error"] + (["-hwaccel", "auto"] if live else []) + \
+              ["-ss", f"{start:.2f}", "-t", f"{dur:.2f}", "-i", movie]
     for a in inp:
         cmd += a
     cmd += filter_complex_args(";".join(fl[:a_lines0] if live else fl), tmp) + ["-map", "[vout]"]

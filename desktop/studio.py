@@ -17,6 +17,7 @@ import engine as E
 import preview as P
 import player as PL
 import captions as CAP
+import pq
 from captions_ui import CaptionsMixin
 from widgets import (NEON, NEON_D, NEON_H, BLACK, PANEL, FIELD, GREY, TEXT, EDGE, DANGER, DANGER_H,
                      QUIET, QUIET_H, IMG_VID, NumField, Form, FontPicker, conv, open_path, hex_to_rgb)
@@ -160,6 +161,8 @@ class Studio(CaptionsMixin, ctk.CTkFrame):
         ctk.CTkCheckBox(pb, text="Loop", variable=self.play_loop, width=60, text_color=TEXT).pack(side="left", padx=2)
         ctk.CTkCheckBox(pb, text="Next part", variable=self.play_next, width=80, text_color=TEXT).pack(side="left", padx=2)
         ctk.CTkCheckBox(pb, text="Mute", variable=self.play_mute, width=60, text_color=TEXT).pack(side="left", padx=2)
+        ctk.CTkLabel(pb, text="Preview", text_color=GREY).pack(side="left", padx=(8, 2))
+        pq.menu(pb, self.pq_changed, width=70).pack(side="left", padx=2)
         self.hint = ctk.CTkLabel(centre, text="Play shows the part with every edit, animation and sound. Space = play / "
                                               "pause, arrows = 1 s back / forward (click the picture first). Drag "
                                               "an overlay or text on the picture to move it.",
@@ -1141,6 +1144,14 @@ class Studio(CaptionsMixin, ctk.CTkFrame):
     def seek_by(self, d):
         self.seek_to(self.t_rel + d)
 
+    def pq_changed(self):
+        """Preview quality changed (here or in another tab): show it at once."""
+        if self.playing:
+            self.stop_play(render=False)
+            self.start_play()
+        else:
+            self.schedule_render()
+
     def toggle_play(self):
         if self.playing:
             self.stop_play()
@@ -1156,8 +1167,7 @@ class Studio(CaptionsMixin, ctk.CTkFrame):
         if self.t_rel >= L - 0.2:
             self.t_rel = 0.0
         s = self.preview_settings(part, self.part_number(self.part_idx))
-        if s["resolution"] not in ("480p",):
-            s["resolution"] = "480p"                 # small frames: plays in real time on any computer
+        s["_pq"] = pq.factor()                       # preview quality: Full / 1/2 / 1/4 / 1/8 of the export size
         s["_fast"] = True
         try:
             info = self.renderer._info_for(self.movie)
@@ -1974,6 +1984,7 @@ class Studio(CaptionsMixin, ctk.CTkFrame):
 
     def still_settings(self, s, part):
         """The settings for the still picture: captions become a normal text layer at this moment."""
+        s["_pq"] = pq.factor()
         try:
             if self.cc_compare.get():
                 s["_compare"] = True
