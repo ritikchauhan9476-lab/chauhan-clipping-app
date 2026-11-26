@@ -188,7 +188,7 @@ class AutoShortJob:
         else:
             self.progress(1.0, f"Done - {self.made} short(s) ready.")
         self.log(f"Finished. {self.made} short(s) in: {self.out_dir}")
-        if self.smart:
+        if getattr(self, "smart", None):
             self.log(self.smart.usage.text())
         return self.made
 
@@ -204,7 +204,7 @@ class AutoShortJob:
                 ls, le = regs[-1]
                 if le >= c_end - 0.35 and ls > t + 1.0:     # speech runs past the chunk edge: scan it again next time
                     regs, nxt = regs[:-1], ls
-            if self.smart and not self.stopped:
+            if getattr(self, "smart", None) and not self.stopped:
                 words = self.smart.hear(self.movie, t, nxt)
                 if words:
                     before = sum(e - s for s, e in regs)
@@ -295,7 +295,7 @@ class AutoShortJob:
 
     def words_near(self, pieces, pad=15.0):
         """The heard words around a short (kept with a planned short, so captions follow any later edit)."""
-        if not self.cap_words or not pieces:
+        if not getattr(self, "cap_words", None) or not pieces:
             return []
         lo, hi = min(a for a, _ in pieces) - pad, max(a + d for a, d in pieces) + pad
         return [list(w) for w in self.cap_words if lo <= w[1] <= hi]
@@ -306,7 +306,7 @@ class AutoShortJob:
         ovs, txs = relative_items(self.items, total, n)
         txs = txs + self.boost_texts(n, total)
         S = dict(self.runner.s, overlays=ovs, texts=txs)
-        if self.smart and self.smart.o.get("captions"):
+        if getattr(self, "smart", None) and self.smart.o.get("captions"):
             import smartcut
             cap = smartcut.caption_settings(self.smart.o, words if words is not None else self.words_near(pieces))
             if cap:
@@ -350,7 +350,7 @@ class AutoShortJob:
             self.made += 1
             d = dict(path=final, name=name, number=n, length=total, start=pieces[0][0], planned=True,
                      pieces=[list(p) for p in pieces], auto_pieces=[list(p) for p in pieces])
-            if self.smart and self.smart.o.get("captions"):
+            if getattr(self, "smart", None) and self.smart.o.get("captions"):
                 d["words"] = self.words_near(pieces)
             self.made_list.append(d)
             self.log(f"Short {n} planned: {total:.1f}s from {_mmss(pieces[0][0])} ({len(pieces)} piece(s)) - "
