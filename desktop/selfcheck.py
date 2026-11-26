@@ -50,7 +50,7 @@ def t_silence_windows():
 
 def t_modules():
     import engine, dialogue, colour, project, model, scoring, preview, widgets, auto_short, auto_short_ui, studio  # noqa: F401
-    import viral, viral_ui, ytdl  # noqa: F401
+    import viral, viral_ui, ytdl, captions, captions_ui, tracks, tracks_ui, short_model, short_editor  # noqa: F401
     import cv2  # noqa: F401  (faces for the Viral Clips layouts)
     import app  # noqa: F401
 
@@ -641,6 +641,189 @@ def t_viral_window():
     return f"{len(st.parts)} clips found + exported ({', '.join(files)[:120]}); Export again OK"
 
 
+def _pump(w, sec, until=None):
+    import time
+    t0 = time.time()
+    while time.time() - t0 < sec:
+        w.update()
+        if until is not None and until():
+            return True
+        time.sleep(0.03)
+    return until() if until is not None else True
+
+
+def _dur(p):
+    return float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", p],
+                                capture_output=True, text=True).stdout.strip() or 0)
+
+
+def t_audio_tracks():
+    """MKVToolNix-style tracks: 3 languages + subtitles -> keep 2, Tamil first and default, from the window too."""
+    import app as A
+    import tracks as T
+    import tracks_ui as TU
+    srt = os.path.join(tmp, "tr.srt")
+    with open(srt, "w", encoding="utf-8") as f:
+        f.write("1\n00:00:01,000 --> 00:00:03,000\nHello there\n")
+    multi = os.path.join(tmp, "multi_lang.mkv")
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", movie, "-f", "lavfi", "-i", "sine=f=500:d=12",
+                    "-f", "lavfi", "-i", "sine=f=800:d=12", "-i", srt, "-map", "0:v", "-map", "0:a", "-map", "1:a",
+                    "-map", "2:a", "-map", "3", "-c:v", "copy", "-c:a", "aac", "-c:s", "srt",
+                    "-metadata:s:a:0", "language=hin", "-metadata:s:a:1", "language=eng", "-metadata:s:a:2",
+                    "language=tam", "-shortest", multi], check=True)
+    tr, d = T.probe(multi)
+    assert [t["lang"] for t in tr if t["type"] == "audio"] == ["hin", "eng", "tam"], tr
+    w = A.App()
+    w.update()
+    st = w.simple
+    st.load_movie(multi)
+    win = TU.TracksWindow(st, multi, lambda p: st.load_movie(p))
+    _pump(w, 0.5)
+    hin = [t["index"] for t in tr if t["lang"] == "hin"][0]
+    tam = [t["index"] for t in tr if t["lang"] == "tam"][0]
+    win.keep[hin].set(False)
+    win.main.set(tam)
+    win.name[tam].set("Tamil main")
+    win.save()
+    ok = _pump(w, 60, lambda: st.movie != multi)
+    assert ok, "the new file was not made / opened: " + win.status.cget("text")
+    t2, _ = T.probe(st.movie)
+    auds = [t for t in t2 if t["type"] == "audio"]
+    assert [t["lang"] for t in auds] == ["tam", "eng"] and auds[0]["default"] and auds[0]["title"] == "Tamil main", auds
+    assert any(t["type"] == "subtitle" for t in t2)
+    one = T.save_track(multi, [t for t in tr if t["type"] == "audio"][1])
+    assert os.path.getsize(one) > 1000
+    w.destroy()
+    return f"{os.path.basename(st.movie)}: Tamil (main) + English kept, Hindi removed, subtitle kept; one track saved alone"
+
+
+def t_captions():
+    """Captions from an SRT next to the movie: found, switched on, in the preview / plans / export, many styles."""
+    import app as A
+    import engine as E
+    import captions as CAP
+    import shutil as SH
+    cm = os.path.join(tmp, "cap_movie.mp4")
+    SH.copyfile(movie, cm)
+    with open(os.path.join(tmp, "cap_movie.srt"), "w", encoding="utf-8") as f:
+        f.write("1\n00:00:01,000 --> 00:00:04,000\n<i>Ye hai woh pal</i> jiska sabko intezaar tha\n\n"
+                "2\n00:00:05,000 --> 00:00:08,000\nNobody believed it would happen\n")
+    w = A.App()
+    w.update()
+    st = w.simple
+    st.load_movie(cm)
+    assert st.cap.get("file", "").endswith("cap_movie.srt") and len(st.cap_cues) == 2, st.cap
+    st.cap_v["on"].set(True)
+    st.cap_v["style"].set("Neon glow")
+    st.cap_changed()
+    st.parts = [{"on": True, "sil": True, "ov": True, "start": 0.5, "end": 9.0, "label": ""}]
+    st.part_idx, st.t_rel = 0, 1.5
+    ps = st.preview_settings(st.parts[0])
+    assert ps.get("_captions") and ps["_captions"]["words"], "no captions in the preview"
+    st.shown = -1
+    st.render_now()
+    assert _pump(w, 30, lambda: st.shown >= 0), "the still preview did not come"
+    plans = st.build_plans([(0, st.parts[0])])
+    assert plans[0]["extra"].get("_captions")
+    cpu = [c for c in E.CODECS if "CPU" in c][0]
+    s = E.sanitize({"resolution": "480p", "codec": cpu, "rate_mode": E.RATE_MODES[0], "bitrate": 2000, "aspect": "9:16"})
+    r = E.Runner(s, lambda *_: None, None, None)
+    info = E.probe_info(cm)
+    names = list(CAP.STYLES)
+    for k, (style, mode) in enumerate([(names[0], "word"), ("Bubble (white box)", "word"), ("Typewriter", "word"),
+                                       ("Hindi neon", "word"), ("Cinema", "line")]):
+        cap = CAP.for_range(dict(st.cap_full(), style=style, mode=mode), 0.5, 9.0)
+        out = os.path.join(tmp, f"cap{k}.mp4")
+        assert r.cut(cm, 0.5, 8.5, out, info, None, dict(s, _captions=cap)), style
+        # the same with pieces (Auto Short / dialogue cut)
+        out2 = os.path.join(tmp, f"capp{k}.mp4")
+        assert r.cut(cm, 0.5, 5, out2, info, None, dict(s, _captions=cap), pieces=[(5.0, 2.5), (1.0, 2.5)]), style
+    w.destroy()
+    return f"SRT found next to the movie, preview + plans + export OK; {len(CAP.STYLES)} styles, 5 checked (also in pieces)"
+
+
+def t_short_editor():
+    """Auto Short review: a planned short is checked and edited on the timeline (split, delete, drag an edge to
+    bring back, bring back a cut part, move, undo / redo, play), then exported from the list."""
+    import app as A
+    import engine as E
+    import auto_short_ui as AU
+    import auto_short as AS
+    from short_model import ShortModel
+    w = A.App()
+    w.update()
+    sm, af = w.simple, w.auto_short
+    errs = []
+    AU.messagebox.showerror = lambda *a, **k: errs.append(a)
+    sm.load_movie(movie)
+    sm.cfg.update(codec=[c for c in E.CODECS if "CPU" in c][0], resolution="480p", rate_mode=E.RATE_MODES[0], bitrate=2000)
+    sm.sync_export = lambda: None
+    af.review.set(True)
+    # review mode of the job: shorts are planned, not exported
+    planned = []
+    job = AS.AutoShortJob(movie, [(0, 12)], {}, E.sanitize(dict(sm.cfg)), [], os.path.join(tmp, "as_rev"),
+                          lambda *_: None, lambda *a: None, planned.append, min_len=3, max_len=5, review=True)
+    job.prepare()
+    assert job.render([(1.0, 2.0), (4.0, 2.5)]) and planned and planned[0]["planned"], planned
+    assert not os.path.exists(planned[0]["path"])
+    af.out_dir = os.path.join(E.OUTPUT_DIR, f"{sm.file_base()}_auto_short")
+    d = dict(number=7, name="x.mp4", path=os.path.join(af.out_dir, "x.mp4"), planned=True, start=1.0,
+             pieces=[[1.0, 2.0], [4.0, 3.0], [8.0, 2.0]], auto_pieces=[[1.0, 2.0], [4.0, 3.0], [8.0, 2.0]])
+    af.add_plan_row(d)
+    assert af.exp_all_btn.cget("state") == "normal"
+    af.open_editor(d)
+    ed = af.editor
+    _pump(w, 1.0)
+    m = ed.m
+    assert abs(m.total - 7.0) < 0.01
+    assert _pump(w, 30, lambda: ed.shown >= 0), "no still picture in the editor"
+    ed.seek(1.0)
+    ed.do_split()
+    assert len(m.p) == 4, m.p
+    ed.sel = 1
+    ed.do_delete()
+    assert len(m.p) == 3 and abs(m.total - 6.0) < 0.01, m.p
+    ed.do_undo()
+    assert len(m.p) == 4
+    ed.do_redo()
+    # drag the right edge of the last piece 40 px to the right: brings back what came after it
+    ed.update()
+
+    class Ev:
+        pass
+    e = Ev()
+    e.x, e.y = int(ed.tl_x(m.total)) - 2, 60
+    before = m.total
+    ed.tl_down(e)
+    e.x += 40
+    ed.tl_move(e)
+    ed.tl_up(e)
+    assert m.total > before + 0.2, (before, m.total, m.p)
+    # bring back a cut part chosen on the movie strip
+    gaps = m.gaps(*ed.span)
+    ed.gap_sel = [g for g in gaps if g[0] >= 2.0][0]
+    n0 = m.total
+    ed.do_bring_back()
+    assert m.total > n0, m.p
+    ed.sel = 0
+    ed.do_move(1)
+    # play a little
+    ed.seek(0)
+    ed.start_play()
+    _pump(w, 4.0)
+    shown = getattr(ed, "frames_shown", 0)
+    ed.stop_play()
+    assert shown > 5, f"the editor played only {shown} frames ({ed.player.error[-200:]})"
+    final = m.total
+    ed.save(True)
+    assert _pump(w, 300, lambda: d.get("exported")), "the edited short was not exported"
+    got = _dur(d["path"])
+    assert abs(got - final) < 0.6, (got, final)
+    assert not errs, errs
+    w.destroy()
+    return f"planned (not exported) -> split / delete / undo / drag edge / bring back / move / play ({shown} frames) -> exported {got:.1f}s"
+
+
 def t_youtube():
     """yt-dlp + deno are in the folder. A real YouTube download is tried; YouTube often blocks cloud machines, so a
     refusal there is only reported."""
@@ -756,6 +939,9 @@ step("CapCut text options (styles, effects, animations)", t_capcut_text)
 step("pro edit (rotate, crop, speed, effects) + live player", t_pro_edit_and_player)
 step("Viral Clips engine (captions, hook, layouts, AI services, kit)", t_viral_engine)
 step("Viral Clips tab (find + export as found, Export again, project)", t_viral_window)
+step("Audio tracks: keep / remove languages (MKVToolNix style)", t_audio_tracks)
+step("Captions from SRT (styles, preview, export, pieces)", t_captions)
+step("Auto Short: check + edit on the timeline before export", t_short_editor)
 step("YouTube link download (yt-dlp + deno)", t_youtube)
 step("silence cut, one part at a time (AI Clipping)", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)

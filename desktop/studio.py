@@ -15,6 +15,8 @@ from PIL import Image, ImageTk
 import engine as E
 import preview as P
 import player as PL
+import captions as CAP
+from captions_ui import CaptionsMixin
 from widgets import (NEON, NEON_D, NEON_H, BLACK, PANEL, FIELD, GREY, TEXT, EDGE, DANGER, DANGER_H,
                      QUIET, QUIET_H, IMG_VID, NumField, Form, FontPicker, conv, open_path, hex_to_rgb)
 
@@ -56,7 +58,7 @@ def items_for(items, ov=True, txo=None):
     return [d for d in (eff_item(it, ov, txo) for it in items) if d is not None]
 
 
-class Studio(ctk.CTkFrame):
+class Studio(CaptionsMixin, ctk.CTkFrame):
     def __init__(self, parent, app, mode):
         super().__init__(parent, fg_color="transparent")
         self.app = app
@@ -89,6 +91,7 @@ class Studio(ctk.CTkFrame):
         self.movie_paths = {}
         self.boxes = []
         self.sel_vars = {}
+        self.cap_init()
         self.build()
         self.refresh_movies()
         self.redraw_items()
@@ -106,6 +109,7 @@ class Studio(ctk.CTkFrame):
         self.movie_menu.pack(side="left", padx=4, pady=8)
         ctk.CTkButton(top, text="Browse...", width=90, command=self.browse).pack(side="left", padx=4)
         ctk.CTkButton(top, text="YouTube link", width=100, command=self.from_link).pack(side="left", padx=4)
+        ctk.CTkButton(top, text="Audio tracks", width=100, command=self.open_tracks).pack(side="left", padx=4)
         ctk.CTkButton(top, text="Refresh", width=80, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
                       command=self.refresh_movies).pack(side="left", padx=4)
         self.info_lbl = ctk.CTkLabel(top, text="No movie loaded", text_color=GREY)
@@ -181,12 +185,13 @@ class Studio(ctk.CTkFrame):
         # Those two live in AI Clipping. (Their settings objects are still created, in a hidden frame, so the rest of the
         # program keeps working; they are never used in Simple Edit.)
         cutting = self.cutting
-        for name in (("AI Clips",) if self.mode == "viral" else ()) + ("Aspect & Crop", "Colour", "Overlay", "Text") + (("Silence",) if cutting else ()) + (("Clean start / end",) if not cutting else ()) + ("Speed & Effects", "Export",) + (("Dialogue",) if cutting else ()):
+        for name in (("AI Clips",) if self.mode == "viral" else ()) + ("Aspect & Crop", "Colour", "Overlay", "Text", "Captions") + (("Silence",) if cutting else ()) + (("Clean start / end",) if not cutting else ()) + ("Speed & Effects", "Export",) + (("Dialogue",) if cutting else ()):
             self.right.add(name)
         self.build_aspect(self.right.tab("Aspect & Crop"))
         self.build_colour(self.right.tab("Colour"))
         self.build_overlay(self.right.tab("Overlay"))
         self.build_text(self.right.tab("Text"))
+        self.build_captions(self.right.tab("Captions"))
         hidden = ctk.CTkFrame(self)
         self.build_silence(self.right.tab("Silence") if cutting else hidden)
         self.build_trim(self.right.tab("Clean start / end") if not cutting else hidden)
@@ -783,6 +788,18 @@ class Studio(ctk.CTkFrame):
         if p:
             self.load_movie(p)
 
+    def open_tracks(self):
+        """Keep / remove audio languages and subtitle tracks of the movie (saved as a new file)."""
+        if not self.movie:
+            messagebox.showwarning("Audio tracks", "Choose a movie first.")
+            return
+        import tracks_ui
+
+        def saved(p):
+            self.refresh_movies()
+            self.load_movie(p)
+        self.tracks_win = tracks_ui.TracksWindow(self, self.movie, saved)
+
     def on_movie_choice(self, name):
         if name in self.movie_paths:
             self.load_movie(self.movie_paths[name])
@@ -807,6 +824,10 @@ class Studio(ctk.CTkFrame):
         self.sil_text.delete("1.0", "end")
         if self.mode == "simple":
             self.p_end.set("")
+        try:
+            self.cap_auto_find()
+        except Exception:
+            pass
         self.refresh_parts()
         self.redraw_items()
         self.refresh_editors()
@@ -1827,7 +1848,19 @@ class Studio(ctk.CTkFrame):
         s = dict(self.cfg)
         ovs, txs = self.localized(part, number)
         s["overlays"], s["texts"] = ovs, txs
+        cap = self.cap_extra(part["start"], part["end"])
+        if cap:
+            s["_captions"] = cap
         return E.sanitize(s)
+
+    def still_settings(self, s, part):
+        """The settings for the still picture: captions become a normal text layer at this moment."""
+        cap = s.pop("_captions", None)
+        if cap:
+            it = CAP.still_item(cap, part["start"], part["end"], self.t_rel)
+            if it:
+                s["texts"] = list(s.get("texts") or []) + [it]
+        return s
 
     def render_now(self):
         self.render_after = None
@@ -1837,7 +1870,8 @@ class Studio(ctk.CTkFrame):
         t_abs = min(max(0.0, part["start"] + self.t_rel), max(0.0, self.dur - 0.05))
         self.pos_lbl.configure(text=f"Position: {tstr(self.t_rel)}")
         self.token += 1
-        self.renderer.submit(self.movie, t_abs, self.preview_settings(part, self.part_number(self.part_idx)),
+        self.renderer.submit(self.movie, t_abs,
+                             self.still_settings(self.preview_settings(part, self.part_number(self.part_idx)), part),
                              self.token)
 
     def show_frame(self, img, tok, err):
@@ -2082,10 +2116,11 @@ class Studio(ctk.CTkFrame):
             ovs, txs = self.localized(p, number)
             pieces = [(p["start"], p["end"] - p["start"])]       # silence_prepare cuts the silence of this part only, when its turn comes
             sil_flag = bool(self.cutting and self.sil_on.get() and p["sil"])
+            cap = self.cap_extra(p["start"], p["end"])
             plans.append(dict(file=self.plan_file(idx, p), start=p["start"],
                               end=p["end"], label=p.get("label", ""), pieces=pieces, overlays=ovs, texts=txs,
                               number=number, sil=sil_flag, ov=bool(p.get("ov", True)),
-                              txo=copy.deepcopy(p.get("txo") or {})))
+                              txo=copy.deepcopy(p.get("txo") or {}), extra={"_captions": cap} if cap else {}))
         return plans
 
     def plan_file(self, idx, p):
@@ -2337,7 +2372,7 @@ class Studio(ctk.CTkFrame):
             trim=dict(on=bool(self.trim_on.get()), sec=self.trim_seconds(), voice=bool(self.trim_voice.get()),
                       end_on=bool(self.tend_on.get()), end_sec=self.trim_seconds(self.tend_sec)),
             exported=sorted(self.done_names), resume=bool(self.resume_on.get()),
-            right_tab=self.right.get())
+            right_tab=self.right.get(), captions=self.cap_state())
         if self.mode == "simple":
             st["range"] = dict(start=self.p_start.get(), end=self.p_end.get(), count=self.p_count.get(),
                                length=self.p_len.get())
@@ -2385,6 +2420,7 @@ class Studio(ctk.CTkFrame):
         self._try("silence", self._restore_silence, st)
         self._try("dialogue", self._restore_dialogue, st)
         self._try("clean start", self._restore_trim, st)
+        self._try("captions", self.cap_restore, st.get("captions"))
         self._try("position", self._restore_view, st)
         return self.restore_errors
 

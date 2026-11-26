@@ -709,6 +709,24 @@ def pieces_graph(pieces, base, fr, has_audio, fade=0.02):
     return fl, "[vcat]", ("[acat]" if has_audio else None), total
 
 
+def pieces_audio(pieces, base, fr, fade=0.02):
+    """Only the sound of `pieces`, joined (the live player plays the sound from its own command)."""
+    n = len(pieces)
+    fl = ["[0:a:0]aformat=sample_rates=48000:channel_layouts=stereo" +
+          (f",asplit={n}" + "".join(f"[as{i}]" for i in range(n)) if n > 1 else "[as0]")]
+    joined = ""
+    for i, (a, d) in enumerate(pieces):
+        s0 = max(0.0, round((a - base) * fr) / fr)
+        e0 = max(s0 + 1.0 / fr, round((a - base + d) * fr) / fr)
+        L = e0 - s0
+        f = max(0.001, min(fade, L / 2))
+        fl.append(f"[as{i}]atrim=start={s0:.5f}:end={e0:.5f},asetpts=PTS-STARTPTS,"
+                  f"afade=t=in:d={f:.3f},afade=t=out:st={max(0.0, L - f):.5f}:d={f:.3f}[at{i}]")
+        joined += f"[at{i}]"
+    fl.append(f"{joined}concat=n={n}:v=0:a=1[acat]")
+    return fl
+
+
 _FF_NEW_SYNTAX = None
 
 
@@ -1012,9 +1030,11 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
     vin, ain, ss_base, read_len = "[0:v:0]", "[0:a:0]", None, 0.0
     if pieces:
         pieces = [(float(a), float(d)) for a, d in pieces if float(d) > 0.02]
-        ss_base = max(0.0, pieces[0][0])
-        gl, vin, ain, total = pieces_graph(pieces, ss_base, frame_rate(info), info["has_audio"],
+        ss_base = max(0.0, min(a for a, _ in pieces))       # pieces may be in any order (edited shorts)
+        gl, vin, ain, total = pieces_graph(pieces, ss_base, frame_rate(info), info["has_audio"] and not live,
                                            float(s.get("_joint_fade", 0.02)))
+        if live and info["has_audio"]:
+            ain = "[acat]"          # the sound is joined in the player's own sound command (below)
         fl.extend(gl)
         start, dur = 0.0, total
         read_len = max(a + d for a, d in pieces) - ss_base + 0.3
@@ -1194,13 +1214,26 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
         for f in text_filters(t, OW, OH, tst, ten, tmp):
             add(f)
 
+    # captions from a subtitle file (Captions tab: every section, Auto Short)
+    cap = s.get("_captions")
+    if cap and cap.get("on", True):
+        import captions as CAP
+        a0 = start if not pieces else min(p_[0] for p_ in pieces)
+        b0 = start + dur if not pieces else max(p_[0] + p_[1] for p_ in pieces)
+        st_ = CAP.style_of(cap)
+        for t0, t1, text in CAP.events(cap, a0, b0, clip_t if pieces else None):
+            if t0 >= dur:
+                continue
+            it_ = CAP.item(cap, wrap_caption(text, st_, OW, OH))
+            for f in text_filters(it_, OW, OH, t0, min(t1, dur), tmp):
+                add(f)
     # word-by-word captions (Viral Clips) and the hook title of the first seconds
     cw_ = s.get("_capwords")
     if cw_:
         import viral as VR
         style = VR.CAPTION_STYLES.get(s.get("_capstyle")) or next(iter(VR.CAPTION_STYLES.values()))
-        a0 = start if not pieces else pieces[0][0]
-        b0 = start + dur if not pieces else pieces[-1][0] + pieces[-1][1]
+        a0 = start if not pieces else min(p_[0] for p_ in pieces)
+        b0 = start + dur if not pieces else max(p_[0] + p_[1] for p_ in pieces)
         for t0, t1, text in VR.caption_events([tuple(w) for w in cw_], a0, b0, style, clip_t if pieces else None):
             if t0 >= dur:
                 continue
@@ -1249,6 +1282,8 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
         fades += "," + atempo_chain(speed)
     a_lines0 = len(fl)
     amap = ["-an"]
+    if live and pieces and info["has_audio"]:
+        fl.extend(pieces_audio(pieces, ss_base, frame_rate(info), float(s.get("_joint_fade", 0.02))))
     if preview_t is None:
         auds = []
         for a in sorted(s["audios"], key=_layer_key):

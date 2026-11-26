@@ -26,13 +26,13 @@ class LivePlayer:
         self._n = 0
 
     # ------------------------------------------------------------------ control
-    def start(self, movie, a, dur, s, info, box, mute=False):
+    def start(self, movie, a, dur, s, info, box, mute=False, pieces=None):
         """Starts playing the movie from a (s) for dur (s) with the settings s. Returns at once; frames arrive in
         self.frames. The sound (if any) starts with the first frame (see tick)."""
         self.stop()
         self._n += 1
         self.live = dict(box=box, wav=os.path.join(E.OUTPUT_DIR, f"_live_{os.getpid()}_{self._n}.wav"))
-        cmd, tmp = E.build_command(movie, a, dur, "-", s, info, None, live=self.live)
+        cmd, tmp = E.build_command(movie, a, dur, "-", s, info, None, pieces=pieces, live=self.live)
         self.tmp = tmp
         self.frames = queue.Queue(maxsize=90)
         self.active, self.started, self.done_reading, self.error = True, False, False, ""

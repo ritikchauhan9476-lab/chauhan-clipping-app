@@ -32,6 +32,11 @@ class AutoShortFrame(ctk.CTkFrame):
         self.resume = None                  # where a stopped run carries on (also saved in the project)
         self.out_dir = ""
         self.shown_movie = None
+        self.plans = []                      # reviewed shorts: planned, edited, exported
+        self.exporter = None                 # an AutoShortJob that only exports (settings of the run)
+        self.exporting = False
+        self.export_queue = []
+        self.editor = None
         self.grid_columnconfigure(0, weight=0, minsize=400)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -54,6 +59,9 @@ class AutoShortFrame(ctk.CTkFrame):
         self.resume_lbl.pack(side="left", padx=10)
         ctk.CTkButton(top, text="Open folder", width=110, height=38, fg_color=QUIET, hover_color=QUIET_H,
                       text_color=TEXT, command=self.open_folder).pack(side="right", padx=6)
+        self.exp_all_btn = ctk.CTkButton(top, text="EXPORT ALL", width=120, height=38, state="disabled",
+                                         command=self.export_all)
+        self.exp_all_btn.pack(side="right", padx=6)
 
         # ---------------- left: settings
         left = ctk.CTkScrollableFrame(self, fg_color="transparent", width=380)
@@ -93,6 +101,14 @@ class AutoShortFrame(ctk.CTkFrame):
         def note(text):
             ctk.CTkLabel(f, text=text, text_color=GREY, wraplength=340, justify="left",
                          anchor="w").pack(anchor="w", padx=8, pady=(0, 4))
+
+        head("CHECK BEFORE EXPORT")
+        self.review = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(f, text="Show every short first - check it, play it and edit it on a timeline, then export",
+                        variable=self.review, text_color=TEXT).pack(anchor="w", padx=8, pady=3)
+        note("The shorts appear in the list without being exported. 'Check / edit' opens the timeline: play it, "
+             "split, delete, drag an edge to bring back a cut part, move pieces. Then export one, or EXPORT ALL. "
+             "Untick this to export every short at once, like before.")
 
         head("WHICH PART OF THE MOVIE")
         self.use_parts = ctk.BooleanVar(value=False)
@@ -179,7 +195,9 @@ class AutoShortFrame(ctk.CTkFrame):
 
     # ================================================================ project (save / open)
     def get_state(self):
-        return dict(resume=copy.deepcopy(self.resume), use_parts=bool(self.use_parts.get()), start=self.r_start.get(), end=self.r_end.get(),
+        return dict(resume=copy.deepcopy(self.resume), review=bool(self.review.get()),
+                    plans=copy.deepcopy([{k: v for k, v in d.items() if k != "row"} for d in self.plans]),
+                    use_parts=bool(self.use_parts.get()), start=self.r_start.get(), end=self.r_end.get(),
                     min_len=float(self.min_len.get()), max_len=float(self.max_len.get()),
                     keep_last=bool(self.keep_last.get()), pad=float(self.pad.get()),
                     minsil=float(self.minsil.get()), denoise=bool(self.denoise.get()),
@@ -198,6 +216,11 @@ class AutoShortFrame(ctk.CTkFrame):
     def set_state(self, st):
         st = st or {}
         self.set_resume(st.get("resume"))
+        self.review.set(bool(st.get("review", True)))
+        self.clear_list()
+        for d in st.get("plans") or []:
+            if d.get("pieces"):
+                self.add_plan_row(dict(d))
         self.use_parts.set(bool(st.get("use_parts", False)))
         for entry, key, default in ((self.r_start, "start", "0"), (self.r_end, "end", "")):
             entry.delete(0, "end")
@@ -257,7 +280,133 @@ class AutoShortFrame(ctk.CTkFrame):
                       command=lambda p=os.path.dirname(d["path"]): open_path(p)).pack(side="right", padx=2)
         ctk.CTkButton(row, text="Play", width=64, command=lambda p=d["path"]: play_file(p)).pack(side="right", padx=2)
 
+    # ---------------- reviewed shorts (check / edit before export)
+    def add_plan_row(self, d):
+        if self.empty_lbl is not None:
+            self.empty_lbl.destroy()
+            self.empty_lbl = None
+        row = ctk.CTkFrame(self.list_box, fg_color="transparent")
+        row.pack(fill="x", padx=2, pady=2)
+        d["row"] = row
+        lbl = ctk.CTkLabel(row, text="", text_color=TEXT, anchor="w")
+        lbl.pack(side="left", padx=4)
+        d["lbl"] = lbl
+        ctk.CTkButton(row, text="Export", width=70, command=lambda d=d: self.export_one(d)).pack(side="right", padx=2)
+        ctk.CTkButton(row, text="Play", width=56, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
+                      command=lambda d=d: play_file(d["path"]) if d.get("exported") and os.path.isfile(d["path"])
+                      else self.open_editor(d)).pack(side="right", padx=2)
+        ctk.CTkButton(row, text="Check / edit", width=100, command=lambda d=d: self.open_editor(d)).pack(side="right", padx=2)
+        self.plans.append(d)
+        self.update_plan_row(d)
+        self.update_export_all()
+
+    def update_plan_row(self, d):
+        length = sum(x[1] for x in d["pieces"])
+        state = "EXPORTED" if d.get("exported") else ("exporting ..." if d.get("busy") else
+                                                      ("edited" if d.get("edited") else "not exported yet"))
+        try:
+            d["lbl"].configure(text=f"Short {d['number']}  -  {length:.0f} s  -  {len(d['pieces'])} piece(s)  -  {state}",
+                               text_color=NEON if d.get("exported") else TEXT)
+        except Exception:
+            pass
+
+    def update_export_all(self):
+        todo = [d for d in self.plans if not d.get("exported") and not d.get("busy")]
+        self.exp_all_btn.configure(state="normal" if todo and not self.exporting else "disabled")
+
+    def make_exporter(self):
+        """The settings of the shorts (Simple Edit look + Auto Short boost), to check and export planned shorts."""
+        sm = self.simple
+        if self.exporter is not None and self.exporter.movie == sm.movie:
+            return self.exporter
+        sm.sync_export()
+        s = E.sanitize(dict(sm.cfg))
+        cap = sm.cap_full()
+        if cap:
+            s["_captions"] = cap
+        opts = dict(denoise=bool(self.denoise.get()), boost=self.boost_opts())
+        self.out_dir = self.out_dir or os.path.join(E.OUTPUT_DIR, f"{sm.file_base()}_auto_short")
+        self.exporter = auto_short.AutoShortJob(sm.movie, [], opts, s, copy.deepcopy(sm.items), self.out_dir,
+                                                self.log, lambda *a: None, lambda d: None,
+                                                min_len=float(self.min_len.get()), max_len=float(self.max_len.get()))
+        return self.exporter
+
+    def open_editor(self, d):
+        if not self.simple.movie:
+            messagebox.showwarning("Auto Short", "Choose the movie in the Simple Edit tab first.")
+            return
+        if d.get("busy"):
+            return
+        import short_editor
+        try:
+            if self.editor is not None and self.editor.winfo_exists():
+                self.editor.close()
+        except Exception:
+            pass
+
+        def saved(pieces, export_now, d=d):
+            if [list(p) for p in pieces] != [list(p) for p in d["pieces"]]:
+                d["pieces"] = [list(p) for p in pieces]
+                d["edited"] = True
+                if d.get("exported"):
+                    d["exported"] = False             # changed after export: export it again
+            self.update_plan_row(d)
+            self.update_export_all()
+            if export_now:
+                self.export_one(d)
+        self.editor = short_editor.ShortEditor(self, self.simple.movie, d, self.make_exporter(), saved,
+                                               float(self.min_len.get()), float(self.max_len.get()))
+
+    def export_one(self, d):
+        if d.get("busy"):
+            return
+        d["busy"] = True
+        self.export_queue.append(d)
+        self.update_plan_row(d)
+        self.update_export_all()
+        self.run_exports()
+
+    def export_all(self):
+        for d in self.plans:
+            if not d.get("exported") and not d.get("busy"):
+                d["busy"] = True
+                self.export_queue.append(d)
+                self.update_plan_row(d)
+        self.update_export_all()
+        self.run_exports()
+
+    def run_exports(self):
+        if self.exporting or not self.export_queue:
+            return
+        try:
+            exp = self.make_exporter()
+        except Exception as e:
+            messagebox.showerror("Export", str(e))
+            for d in self.export_queue:
+                d["busy"] = False
+                self.update_plan_row(d)
+            self.export_queue = []
+            return
+        exp.stopped = False
+        exp.runner.stop_flag = False
+        self.exporting = True
+        self.stop_btn.configure(state="normal")
+        self.update_export_all()
+
+        def work():
+            while self.export_queue and not exp.stopped:
+                d = self.export_queue.pop(0)
+                try:
+                    path = exp.export_planned([tuple(p) for p in d["pieces"]], d["number"])
+                except Exception:
+                    self.log("ERROR:\n" + traceback.format_exc())
+                    path = None
+                self.q.put(("exported", (d, path)))
+            self.q.put(("exports_done", None))
+        threading.Thread(target=work, daemon=True).start()
+
     def clear_list(self):
+        self.plans = []
         for w in self.list_box.winfo_children():
             w.destroy()
         self.empty_lbl = ctk.CTkLabel(self.list_box, text="No short yet.", text_color=GREY)
@@ -359,6 +508,9 @@ class AutoShortFrame(ctk.CTkFrame):
         if errs:
             messagebox.showerror("Export", "\n".join(errs))
             return
+        cap = sm.cap_full()                          # captions of Simple Edit (Captions tab) go on every short
+        if cap:
+            s["_captions"] = cap
         self.out_dir = os.path.join(E.OUTPUT_DIR, f"{sm.file_base()}_auto_short")
         self.log_box.delete("1.0", "end")
         self.clear_list()
@@ -369,9 +521,12 @@ class AutoShortFrame(ctk.CTkFrame):
         self.stop_btn.configure(state="normal")
         if resume:
             first = int(resume.get("next_number", sm.part_number(0)))
-            prior = [d for d in resume.get("made", []) if os.path.isfile(d.get("path", ""))]
+            prior = [d for d in resume.get("made", []) if os.path.isfile(d.get("path", "")) or d.get("planned")]
             for d in prior:
-                self.add_short_row(d)
+                if d.get("planned"):
+                    self.add_plan_row(dict(d))
+                else:
+                    self.add_short_row(d)
             all_ranges, base = resume["ranges"], ri
             self.status.configure(text="Continuing ...")
             self.log(f"Continuing from {ranges[0][0]:.0f}s - {len(prior)} short(s) were already made, "
@@ -384,7 +539,8 @@ class AutoShortFrame(ctk.CTkFrame):
             lambda fr, t: self.q.put(("prog", (fr, t))), lambda d: self.q.put(("short", d)),
             min_len=min_len, max_len=max_len, first_number=first, keep_last=bool(self.keep_last.get()),
             all_ranges=all_ranges, index_base=base, prior_made=prior,
-            on_resume=lambda info: self.q.put(("resume", info)))
+            on_resume=lambda info: self.q.put(("resume", info)), review=bool(self.review.get()))
+        self.exporter = None
         self.job = job
         threading.Thread(target=self.work, args=(job,), daemon=True).start()
 
@@ -399,6 +555,9 @@ class AutoShortFrame(ctk.CTkFrame):
         if self.job:
             self.status.configure(text="Stopping ...")
             self.job.stop()
+        if self.exporting and self.exporter:
+            self.status.configure(text="Stopping ...")
+            self.exporter.stop()
 
     def poll(self):
         try:
@@ -411,15 +570,38 @@ class AutoShortFrame(ctk.CTkFrame):
                     self.bar.set(max(0.0, min(1.0, v[0])))
                     self.status.configure(text=v[1])
                 elif kind == "short":
-                    self.add_short_row(v)
+                    if v.get("planned"):
+                        self.add_plan_row(dict(v))
+                    else:
+                        self.add_short_row(v)
+                elif kind == "exported":
+                    d, path = v
+                    d["busy"] = False
+                    if path:
+                        d["exported"] = True
+                        d["path"] = path
+                    self.update_plan_row(d)
+                elif kind == "exports_done":
+                    self.exporting = False
+                    for d in self.export_queue:
+                        d["busy"] = False
+                        self.update_plan_row(d)
+                    self.export_queue = []
+                    if not self.running:
+                        self.stop_btn.configure(state="disabled")
+                    self.update_export_all()
+                    self.status.configure(text=f"{sum(1 for d in self.plans if d.get('exported'))} of "
+                                               f"{len(self.plans)} short(s) exported.")
                 elif kind == "resume":
                     self.resume = v
                 elif kind == "done":
                     self.running = False
                     self.job = None
                     self.go_btn.configure(state="normal")
-                    self.stop_btn.configure(state="disabled")
+                    if not self.exporting:
+                        self.stop_btn.configure(state="disabled")
                     self.set_resume(self.resume)
+                    self.update_export_all()
         except queue.Empty:
             pass
         except Exception as e:

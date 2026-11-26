@@ -81,25 +81,8 @@ SPEECH_BY_LABEL = {v: k for k, v in SPEECH.items()}
 
 # ------------------------------------------------------------------ captions, hook, layouts
 # per = words per caption page; active = colour of the word being spoken ("" = no highlight)
-CAPTION_STYLES = {
-    "Bounce (white, cyan word)": dict(font="Arial Black", size=6.0, color="#FFFFFF", active="#00F0FF", outline=7,
-                                      upper=True, per=3, anim_loop="Bounce"),
-    "Hype (big, yellow word)": dict(font="Impact", size=7.6, color="#FFFFFF", active="#FFD400", outline=8,
-                                    upper=True, per=2, anim_in="Pop", anim_in_dur=0.12),
-    "Clean (small, blue word)": dict(font="Segoe UI", bold=True, size=4.6, color="#FFFFFF", active="#6BD7FF",
-                                     outline=5, upper=False, per=4),
-    "Hindi (Devanagari)": dict(font="Nirmala UI", bold=True, size=5.6, color="#FFFFFF", active="#FFD400", outline=6,
-                               upper=False, per=3),
-    "Editorial": dict(font="Georgia", italic=True, size=4.8, color="#FFFFFF", active="#FFB4A2", outline=0,
-                      shadow=True, upper=False, per=5),
-    "Street": dict(font="Impact", size=6.6, color="#FFFFFF", active="#39FF14", outline=6, shadow=True, upper=True,
-                   per=2, anim_loop="Shake"),
-    "News": dict(font="Arial", bold=True, size=4.2, color="#FFFFFF", active="#FFD400", outline=0, box=True,
-                 box_color="#C8102E", box_opacity=90, box_pad=25, upper=False, per=6),
-    "Cinema": dict(font="Times New Roman", size=4.0, color="#F5F5F0", active="", outline=0, shadow=True,
-                   upper=False, per=8),
-    "Classic subtitles": dict(font="Arial", size=4.4, color="#FFFFFF", active="", outline=3, upper=False, per=8),
-}
+import captions as CAP
+CAPTION_STYLES = CAP.STYLES          # every caption style of the software (captions.py)
 CAPTION_POS = {"Bottom": 72.0, "Lower middle": 62.0, "Middle": 48.0, "Top": 16.0}
 HOOK_STYLES = {
     "White box": dict(font="Arial Black", size=5.0, color="#111111", box=True, box_color="#FFFFFF", box_opacity=100,

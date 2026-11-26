@@ -101,7 +101,7 @@ class AutoShortJob:
 
     def __init__(self, movie, ranges, opts, settings, items, out_dir, log, progress, on_short,
                  min_len=MIN_LEN, max_len=MAX_LEN, first_number=1, keep_last=False, chunk=CHUNK,
-                 all_ranges=None, index_base=0, prior_made=None, on_resume=None):
+                 all_ranges=None, index_base=0, prior_made=None, on_resume=None, review=False):
         self.movie, self.ranges = movie, ranges
         self.opts, self.items, self.out_dir = dict(opts), items, out_dir
         # fewer flash cuts / nothing important lost: tiny pauses are not cut, sentence ends get more time,
@@ -129,19 +129,26 @@ class AutoShortJob:
         self.made_list = list(prior_made or [])
         self.on_resume = on_resume
         self.ri = 0
+        self.review = bool(review)          # True: shorts are only planned (shown for editing), exported later
+        self.info = None
 
     def stop(self):
         self.stopped = True
         self.runner.stop()
 
     # ------------------------------------------------------------------
-    def run(self):
-        self.info = E.probe_info(self.movie)
-        self.crop = E.detect_crop(self.movie, self.info["duration"]) if self.runner.s["auto_crop"] else None
-        if self.crop:
-            self.log(f"Black bars detection: {self.crop}")
-        self.base = E.Runner.safe_name(self.movie)[:40]
+    def prepare(self):
+        """Movie facts + black bars, once (also used when shorts are exported later from the review list)."""
+        if self.info is None:
+            self.info = E.probe_info(self.movie)
+            self.crop = E.detect_crop(self.movie, self.info["duration"]) if self.runner.s["auto_crop"] else None
+            if self.crop:
+                self.log(f"Black bars detection: {self.crop}")
+            self.base = E.Runner.safe_name(self.movie)[:40]
         os.makedirs(self.out_dir, exist_ok=True)
+
+    def run(self):
+        self.prepare()
         self.work = os.path.join(self.out_dir, "_work")
         self.span_total = max(1.0, sum(b - a for a, b in self.ranges))
         self.span_done = 0.0
@@ -264,18 +271,56 @@ class AutoShortJob:
                             hcenter=True, outline=2, shadow=True))
         return out
 
+    def settings_for(self, pieces, n):
+        """The export settings of one short (overlays / texts timed from its start, PART label, hook)."""
+        total = sum(d for _, d in pieces)
+        ovs, txs = relative_items(self.items, total, n)
+        txs = txs + self.boost_texts(n, total)
+        return dict(self.runner.s, overlays=ovs, texts=txs)
+
+    def short_name(self, pieces, n):
+        mm, ss = divmod(int(min(a for a, _ in pieces)), 60)
+        return f"{self.base}_short{n:02d}_{mm:02d}m{ss:02d}s.mp4"
+
+    def export_planned(self, pieces, n, name=None):
+        """Exports a reviewed / edited short. Returns the file path, or None (failed / stopped)."""
+        self.prepare()
+        pieces = [(float(a), float(d)) for a, d in pieces if d > 0.05]
+        total = sum(d for _, d in pieces)
+        name = name or self.short_name(pieces, n)
+        final = os.path.join(self.out_dir, name)
+        self.log(f"Short {n}: exporting {total:.1f}s ({len(pieces)} piece(s)) ...")
+        ok = bool(self.runner.cut(self.movie, pieces[0][0], total, final, self.info, self.crop,
+                                  self.settings_for(pieces, n), pieces=limit_pieces(pieces)))
+        if self.stopped or not ok or not os.path.isfile(final):
+            for junk in (final, final + ".tmp.mp4"):
+                try:
+                    os.remove(junk)
+                except OSError:
+                    pass
+            return None
+        self.log(f"Short {n} ready: {name}")
+        return final
+
     def render(self, group):
-        """Exports one short. Returns False when it was stopped in the middle (nothing is kept of it)."""
+        """Exports one short (or, in review mode, only plans it). Returns False when it was stopped in the middle
+        (nothing is kept of it)."""
         pieces = limit_pieces(D.join_adjacent(group))
         total = sum(d for _, d in pieces)
         n = self.number
         self.number += 1
-        mm, ss = divmod(int(pieces[0][0]), 60)
-        name = f"{self.base}_short{n:02d}_{mm:02d}m{ss:02d}s.mp4"
+        name = self.short_name(pieces, n)
         final = os.path.join(self.out_dir, name)
-        ovs, txs = relative_items(self.items, total, n)
-        txs = txs + self.boost_texts(n, total)
-        S = dict(self.runner.s, overlays=ovs, texts=txs)
+        if self.review:
+            self.made += 1
+            d = dict(path=final, name=name, number=n, length=total, start=pieces[0][0], planned=True,
+                     pieces=[list(p) for p in pieces], auto_pieces=[list(p) for p in pieces])
+            self.made_list.append(d)
+            self.log(f"Short {n} planned: {total:.1f}s from {_mmss(pieces[0][0])} ({len(pieces)} piece(s)) - "
+                     f"check / edit it in the list, then export.")
+            self.on_short(d)
+            return True
+        S = self.settings_for(pieces, n)
         self.log(f"Short {n}: {total:.1f}s of dialogue from {_mmss(pieces[0][0])} - {len(pieces)} piece(s), "
                  f"{len(pieces) - 1} cut(s), shortest piece {min(d for _, d in pieces):.1f}s, "
                  f"average {total / len(pieces):.1f}s - exporting ...")

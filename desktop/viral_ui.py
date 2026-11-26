@@ -508,7 +508,7 @@ class ViralStudio(Studio):
         tags = (V.PLATFORMS.get(o["platform"]) or {}).get("tags", []) if o.get("platform_tags") else []
         for (idx, p), plan in zip(chosen, plans):
             clip = self._clip_of(p)
-            plan["extra"] = V.clip_extras(clip, o)
+            plan["extra"] = dict(plan.get("extra") or {}, **V.clip_extras(clip, o))
 
             def after(f, clip=clip, zip_kit=o["zip_kit"]):
                 V.make_kit(f, clip, movie, tags, zip_kit)
@@ -550,6 +550,7 @@ class ViralStudio(Studio):
         for k in ("_capwords", "_hook", "_layout", "_boost"):
             s.pop(k, None)
         s["texts"] = texts
+        s = self.still_settings(s, part)
         self.token += 1
         self.renderer.submit(self.movie, t_abs, s, self.token)
 
