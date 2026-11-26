@@ -819,6 +819,12 @@ def t_short_editor():
     assert _pump(w, 300, lambda: d.get("exported")), "the edited short was not exported"
     got = _dur(d["path"])
     assert abs(got - final) < 0.6, (got, final)
+    # the project can be saved and opened again with reviewed shorts in the list (Save did not work before)
+    import project as PRJ
+    pf = os.path.join(tmp, "with_plans.ccproj")
+    PRJ.save(pf, w.collect_state())
+    w.apply_state(PRJ.load(pf))
+    assert af.plans and af.plans[0]["pieces"], "the planned shorts were not restored"
     assert not errs, errs
     w.destroy()
     return f"planned (not exported) -> split / delete / undo / drag edge / bring back / move / play ({shown} frames) -> exported {got:.1f}s"

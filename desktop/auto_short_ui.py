@@ -198,7 +198,7 @@ class AutoShortFrame(ctk.CTkFrame):
     # ================================================================ project (save / open)
     def get_state(self):
         return dict(resume=copy.deepcopy(self.resume), review=bool(self.review.get()),
-                    plans=copy.deepcopy([{k: v for k, v in d.items() if k != "row"} for d in self.plans]),
+                    plans=copy.deepcopy([{k: v for k, v in d.items() if k not in ("row", "lbl", "busy")} for d in self.plans]),
                     use_parts=bool(self.use_parts.get()), start=self.r_start.get(), end=self.r_end.get(),
                     min_len=float(self.min_len.get()), max_len=float(self.max_len.get()),
                     keep_last=bool(self.keep_last.get()), pad=float(self.pad.get()),
