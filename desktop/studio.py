@@ -9,6 +9,7 @@ import dialogue
 import auto_short
 import colour as CL
 import tkinter as tk
+import project as PRJ
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
@@ -393,6 +394,7 @@ class Studio(CaptionsMixin, ctk.CTkFrame):
                              "Double-click a name to reset that control.", text_color=GREY, wraplength=330,
                      justify="left", anchor="w").pack(anchor="w", padx=10, pady=(0, 4))
         self.colour_fields = {}
+        self.build_cc_presets(f)
         for section, items in CL.LAYOUT:
             ctk.CTkLabel(f, text=section, font=ctk.CTkFont(size=12, weight="bold"), text_color=NEON,
                          anchor="w").pack(anchor="w", padx=10, pady=(12, 2))
@@ -407,6 +409,123 @@ class Studio(CaptionsMixin, ctk.CTkFrame):
     def reset_colour(self):
         for key, nf in self.colour_fields.items():
             nf.set(0, notify=True)
+        self.cc_last = None
+
+    # ---------------- CC presets (HDR CC, teal & orange ...), LUTs, before / after
+    def build_cc_presets(self, f):
+        ctk.CTkLabel(f, text="CC PRESETS (one click)", font=ctk.CTkFont(size=12, weight="bold"), text_color=NEON,
+                     anchor="w").pack(anchor="w", padx=10, pady=(10, 2))
+        self.cc_last = None
+        self.cc_compare = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(f, text="Before / after (split preview)", variable=self.cc_compare, text_color=TEXT,
+                        command=self.schedule_render).pack(anchor="w", padx=10, pady=(0, 4))
+        self.cc_strength = NumField(f, "Preset strength %", 0, 150, 5, 100, "{:.0f}",
+                                    lambda v: self.cc_last and self.apply_cc_preset(self.cc_last), label_width=130,
+                                    default=100)
+        self.cc_strength.pack(fill="x", padx=6, pady=2)
+        self.cc_grid = ctk.CTkFrame(f, fg_color="transparent")
+        self.cc_grid.pack(fill="x", padx=6, pady=2)
+        self.cc_fill_grid()
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(fill="x", padx=6, pady=(4, 2))
+        ctk.CTkButton(row, text="Save as my preset", width=140, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
+                      command=self.save_cc_preset).pack(side="left")
+        ctk.CTkButton(row, text="Delete my preset", width=130, fg_color=QUIET, hover_color=QUIET_H, text_color=TEXT,
+                      command=self.delete_cc_preset).pack(side="left", padx=6)
+        ctk.CTkLabel(f, text="LUT (.cube file - the colour presets of Premiere / DaVinci / CapCut / Filmora)",
+                     text_color=TEXT, anchor="w", wraplength=330, justify="left").pack(anchor="w", padx=10, pady=(10, 2))
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(fill="x", padx=6, pady=2)
+        ctk.CTkButton(row, text="Load .cube LUT ...", width=140, command=self.load_lut).pack(side="left")
+        ctk.CTkButton(row, text="Remove", width=80, fg_color=DANGER, hover_color=DANGER_H, text_color=TEXT,
+                      command=lambda: self.set_lut("")).pack(side="left", padx=6)
+        self.lut_lbl = ctk.CTkLabel(f, text="", text_color=GREY, anchor="w", wraplength=330, justify="left")
+        self.lut_lbl.pack(anchor="w", padx=10)
+        self.lut_mix = NumField(f, "LUT strength %", 0, 100, 5, float(self.cfg.get("lut_mix", 1.0)) * 100, "{:.0f}",
+                                lambda v: self.set_cfg("lut_mix", v / 100.0), label_width=130, default=100)
+        self.lut_mix.pack(fill="x", padx=6, pady=2)
+        self.show_lut()
+        ctk.CTkLabel(f, text="A preset sets the sliders below - change any of them after. HDR detail = more depth "
+                             "and texture (faces, hair, buildings). Shadows teal / Highlights orange = the film look; "
+                             "minus = the other way (warm shadows, cool sky).",
+                     text_color=GREY, wraplength=330, justify="left", anchor="w").pack(anchor="w", padx=10, pady=(4, 0))
+
+    def cc_user(self):
+        try:
+            return dict(self.app.prefs.get("cc_presets") or {})
+        except Exception:
+            return {}
+
+    def cc_fill_grid(self):
+        for w in self.cc_grid.winfo_children():
+            w.destroy()
+        names = list(CL.PRESETS) + [n for n in self.cc_user() if n not in CL.PRESETS]
+        user = self.cc_user()
+        for i, name in enumerate(names):
+            mine = name in user
+            b = ctk.CTkButton(self.cc_grid, text=("* " if mine else "") + name, height=28, anchor="w",
+                              fg_color=QUIET if not mine else "#3B3F8F", hover_color=QUIET_H, text_color=TEXT,
+                              command=lambda n=name: self.apply_cc_preset(n))
+            b.grid(row=i // 2, column=i % 2, sticky="ew", padx=2, pady=2)
+        self.cc_grid.grid_columnconfigure(0, weight=1)
+        self.cc_grid.grid_columnconfigure(1, weight=1)
+
+    def apply_cc_preset(self, name):
+        ui = CL.preset_ui(name, float(self.cc_strength.get()), self.cc_user())
+        for key, nf in self.colour_fields.items():
+            nf.set(ui.get(key, 0.0), notify=True)
+        self.cc_last = name
+
+    def save_cc_preset(self):
+        d = ctk.CTkInputDialog(text="Name of your preset:", title="Save colour preset")
+        name = (d.get_input() or "").strip()
+        if not name:
+            return
+        vals = {k: round(CL.to_ui(k, self.cfg[k]), 1) for k in CL.KEYS if abs(CL.to_ui(k, self.cfg[k])) > 0.05}
+        try:
+            self.app.prefs.setdefault("cc_presets", {})[name] = vals
+            PRJ.write_prefs(self.app.prefs)
+        except Exception as e:
+            messagebox.showerror("Preset", f"Could not save: {e}")
+            return
+        self.cc_fill_grid()
+
+    def delete_cc_preset(self):
+        user = self.cc_user()
+        if not user:
+            messagebox.showinfo("Preset", "You have no own presets yet (Save as my preset).")
+            return
+        d = ctk.CTkInputDialog(text="Name of your preset to delete:\n" + ", ".join(user), title="Delete preset")
+        name = (d.get_input() or "").strip()
+        if name in user:
+            del self.app.prefs["cc_presets"][name]
+            PRJ.write_prefs(self.app.prefs)
+            self.cc_fill_grid()
+
+    def load_lut(self):
+        p = filedialog.askopenfilename(title="Choose a .cube LUT", filetypes=[("3D LUT", "*.cube"), ("All files", "*.*")])
+        if not p:
+            return
+        try:
+            CL.read_cube(p)
+        except Exception as e:
+            messagebox.showerror("LUT", f"This file is not a 3D .cube LUT:\n{e}")
+            return
+        self.set_lut(p)
+
+    def set_lut(self, p):
+        self.cfg["lut_path"] = p
+        self.show_lut()
+        self.schedule_render()
+
+    def show_lut(self):
+        p = self.cfg.get("lut_path") or ""
+        try:
+            self.lut_lbl.configure(text=("LUT: " + os.path.basename(p)) if p else "No LUT",
+                                   text_color=TEXT if p and os.path.isfile(p) else GREY)
+            self.lut_mix.set(float(self.cfg.get("lut_mix", 1.0)) * 100)
+        except Exception:
+            pass
 
     # ---------------- right: overlays (photo / video / GIF with background removal)
     def build_overlay(self, tab):
@@ -1855,6 +1974,11 @@ class Studio(CaptionsMixin, ctk.CTkFrame):
 
     def still_settings(self, s, part):
         """The settings for the still picture: captions become a normal text layer at this moment."""
+        try:
+            if self.cc_compare.get():
+                s["_compare"] = True
+        except Exception:
+            pass
         cap = s.pop("_captions", None)
         if cap:
             it = CAP.still_item(cap, part["start"], part["end"], self.t_rel)
@@ -2444,6 +2568,7 @@ class Studio(CaptionsMixin, ctk.CTkFrame):
             nf.set(cfg[key])
         self.cfg.clear()                       # after the variables: their callbacks also write into self.cfg
         self.cfg.update(cfg)
+        self.show_lut()
 
     def _restore_items(self, st):
         self.items = copy.deepcopy(st.get("items") or [])

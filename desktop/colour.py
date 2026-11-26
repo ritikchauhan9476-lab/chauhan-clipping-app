@@ -18,11 +18,14 @@ except ImportError:                      # the export does not need PIL; only th
     Image = ImageFilter = None
 
 NEW_DEFAULTS = dict(tint=0.0, exposure=0.0, highlights=0.0, shadows=0.0, whites=0.0, blacks=0.0,
-                    brilliance=0.0, clarity=0.0, grain=0.0, fade=0.0, vignette=0.0)
+                    brilliance=0.0, clarity=0.0, grain=0.0, fade=0.0, vignette=0.0,
+                    vibrance=0.0, hdr=0.0, split_shadows=0.0, split_highlights=0.0)
 
 # (section, key, label)
 LAYOUT = [
-    ("COLOUR", [("warmth", "Temperature"), ("tint", "Tint"), ("saturation", "Saturation"), ("hue", "Hue")]),
+    ("COLOUR", [("warmth", "Temperature"), ("tint", "Tint"), ("saturation", "Saturation"), ("vibrance", "Vibrance"),
+                ("hue", "Hue")]),
+    ("CC LOOK", [("hdr", "HDR detail"), ("split_shadows", "Shadows teal"), ("split_highlights", "Highlights orange")]),
     ("LIGHTNESS", [("exposure", "Exposure"), ("contrast", "Contrast"), ("highlights", "Highlights"),
                    ("shadows", "Shadows"), ("whites", "Whites"), ("blacks", "Blacks"),
                    ("brilliance", "Brilliance")]),
@@ -106,6 +109,99 @@ def tone_points(s, n=33):
     return xs, tone(xs, s)
 
 
+# ------------------------------------------------------------------ split toning (teal shadows / orange highlights)
+def split_points(s, n=17):
+    """Per-channel curves (r, g, b) of the split toning, or None. + shadows = teal, - = warm;
+    + highlights = orange, - = cool blue."""
+    ss, hh = float(s.get("split_shadows", 0.0)), float(s.get("split_highlights", 0.0))
+    if abs(ss) < 1e-6 and abs(hh) < 1e-6:
+        return None
+    xs = np.linspace(0.0, 1.0, n)
+    ws, wh = _bump(xs, 0.18, 0.24), _bump(xs, 0.82, 0.24)
+    r = xs - 0.10 * ss * ws + 0.09 * hh * wh
+    g = xs + 0.025 * ss * ws + 0.025 * hh * wh
+    b = xs + 0.09 * ss * ws - 0.10 * hh * wh
+    fix = lambda y: np.maximum.accumulate(np.clip(y, 0.0, 1.0))
+    return xs, fix(r), fix(g), fix(b)
+
+
+# ------------------------------------------------------------------ vibrance (same maths as FFmpeg's vibrance filter)
+VIB_R, VIB_G, VIB_B = 0.072186, 0.715158, 0.212656          # FFmpeg's default luma weights of the filter
+
+
+def vibrance_np(a, intensity):
+    mx, mn = a.max(axis=-1), a.min(axis=-1)
+    sat = mx - mn
+    luma = a[..., 0] * VIB_R + a[..., 1] * VIB_G + a[..., 2] * VIB_B
+    k = 1.0 + intensity * (1.0 - np.sign(intensity) * sat)
+    return luma[..., None] + (a - luma[..., None]) * k[..., None]
+
+
+def hdr_sigma(width):
+    return max(2.0, width / 80.0)
+
+
+# ------------------------------------------------------------------ .cube LUTs
+_LUTS = {}
+
+
+def read_cube(path):
+    """A .cube 3D LUT -> (size, table [b][g][r][3], domain min, max). Cached."""
+    import os
+    key = (path, os.path.getmtime(path))
+    if key in _LUTS:
+        return _LUTS[key]
+    size, vals, dmin, dmax = 0, [], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            t = line.strip()
+            if not t or t.startswith("#"):
+                continue
+            u = t.upper()
+            if u.startswith("LUT_3D_SIZE"):
+                size = int(t.split()[1])
+            elif u.startswith("DOMAIN_MIN"):
+                dmin = [float(x) for x in t.split()[1:4]]
+            elif u.startswith("DOMAIN_MAX"):
+                dmax = [float(x) for x in t.split()[1:4]]
+            elif u[0].isdigit() or u[0] in "-.":
+                p = t.split()
+                if len(p) >= 3:
+                    vals.append([float(p[0]), float(p[1]), float(p[2])])
+    if size < 2 or len(vals) < size ** 3:
+        raise ValueError("not a 3D .cube LUT")
+    table = np.array(vals[:size ** 3], dtype=np.float32).reshape(size, size, size, 3)   # [b][g][r]
+    out = (size, table, np.array(dmin, np.float32), np.array(dmax, np.float32))
+    _LUTS.clear()
+    _LUTS[key] = out
+    return out
+
+
+def apply_lut_np(a, path, mix=1.0):
+    size, table, dmin, dmax = read_cube(path)
+    x = np.clip((a - dmin) / np.maximum(1e-6, dmax - dmin), 0, 1) * (size - 1)
+    i0 = np.floor(x).astype(np.int32)
+    i0 = np.minimum(i0, size - 2)
+    f = x - i0
+    r0, g0, b0 = i0[..., 0], i0[..., 1], i0[..., 2]
+    fr, fg, fb = f[..., 0:1], f[..., 1:2], f[..., 2:3]
+    out = 0.0
+    for db in (0, 1):
+        wb = fb if db else 1 - fb
+        for dg in (0, 1):
+            wg = fg if dg else 1 - fg
+            for dr in (0, 1):
+                wr = fr if dr else 1 - fr
+                out = out + table[b0 + db, g0 + dg, r0 + dr] * (wr * wg * wb)
+    return a + (out - a) * float(mix)
+
+
+def lut_ok(s):
+    import os
+    p = str(s.get("lut_path") or "")
+    return bool(p) and os.path.isfile(p) and float(s.get("lut_mix", 1.0)) > 0.005
+
+
 # ------------------------------------------------------------------ eq model (FFmpeg's eq works on limited-range luma)
 def eq_luma(y_full, contrast, brightness, gamma):
     """Full-range luma 0..1 -> the same after eq: contrast, then brightness, then gamma."""
@@ -154,6 +250,14 @@ def ffmpeg_colour(s, width):
         f.append(f"colorchannelmixer=rr={r:.4f}:gg={gg:.4f}:bb={bb:.4f}")
     if abs(float(s["hue"])) > 1e-6:
         f.append(f"hue=h={float(s['hue']):.1f}")
+    sp = split_points(s)
+    if sp is not None:
+        xs, r, g, b = sp
+        pts = lambda ys: " ".join(f"{x:.4f}/{y:.4f}" for x, y in zip(xs, ys))
+        f.append(f"curves=r='{pts(r)}':g='{pts(g)}':b='{pts(b)}'")
+    vb = float(s.get("vibrance", 0.0))
+    if abs(vb) > 1e-6:
+        f.append(f"vibrance=intensity={vb:.3f}")
     cl = float(s["clarity"])
     if abs(cl) > 1e-6:
         m = msize(width)
@@ -162,6 +266,34 @@ def ffmpeg_colour(s, width):
     if abs(sh) > 1e-6:
         f.append(f"unsharp=5:5:{sh:.2f}:5:5:0")
     return f
+
+
+def ffmpeg_local(s, width, cur, newlab, fe):
+    """The stages that need a second copy of the picture: LUT (with strength) and HDR detail (big-radius local
+    contrast on the brightness only). Returns (graph lines, new label). They come after the main colour stage."""
+    lines = []
+    if lut_ok(s):
+        mix = min(1.0, float(s.get("lut_mix", 1.0)))
+        lut = f"lut3d=file={fe(s['lut_path'])}:interp=tetrahedral"
+        lab = newlab()
+        if mix >= 0.995:
+            lines.append(f"{cur}{lut},format=yuv444p{lab}")
+        else:
+            n = lab[2:-1]
+            lines.append(f"{cur}format=yuv444p,split[lta{n}][ltb{n}]")
+            lines.append(f"[ltb{n}]{lut},format=yuv444p[ltc{n}]")
+            lines.append(f"[lta{n}][ltc{n}]blend=all_mode=normal:all_opacity={mix:.3f}{lab}")
+        cur = lab
+    h = float(s.get("hdr", 0.0))
+    if abs(h) > 1e-6:
+        lab = newlab()
+        n = lab[2:-1]
+        k = 1.4 * h
+        lines.append(f"{cur}format=yuv444p,split[hda{n}][hdb{n}]")
+        lines.append(f"[hdb{n}]gblur=sigma={hdr_sigma(width):.1f}:planes=1[hdc{n}]")
+        lines.append(f"[hda{n}][hdc{n}]blend=c0_expr='clip(A+(A-B)*{k:.3f},0,255)':c1_expr='A':c2_expr='A'{lab}")
+        cur = lab
+    return lines, cur
 
 
 def vignette_angle(p):
@@ -208,6 +340,14 @@ def apply_colour(img, s):
         a = a * np.array([r, gg, bb], dtype=np.float32)
     if abs(float(s["hue"])) > 1e-6:
         a = hue_rotate(a, float(s["hue"]))
+    sp = split_points(s)
+    if sp is not None:
+        xs, r, g, b = sp
+        a = np.stack([np.interp(a[..., 0], xs, r), np.interp(a[..., 1], xs, g), np.interp(a[..., 2], xs, b)],
+                     axis=-1).astype(np.float32)
+    vb = float(s.get("vibrance", 0.0))
+    if abs(vb) > 1e-6:
+        a = vibrance_np(np.clip(a, 0, 1), vb)
     out = Image.fromarray((np.clip(a, 0, 1) * 255 + 0.5).astype(np.uint8))
     m = msize(out.width)
     cl = float(s["clarity"])
@@ -220,6 +360,20 @@ def apply_colour(img, s):
         out = out.filter(ImageFilter.UnsharpMask(radius=2, percent=int(sh * 60), threshold=0))
     elif sh < -1e-6:
         out = out.filter(ImageFilter.GaussianBlur(-sh * 1.15))
+    if lut_ok(s):
+        try:
+            a = apply_lut_np(np.asarray(out, dtype=np.float32) / 255.0, s["lut_path"], min(1.0, float(s["lut_mix"])))
+            out = Image.fromarray((np.clip(a, 0, 1) * 255 + 0.5).astype(np.uint8))
+        except Exception:
+            pass
+    h = float(s.get("hdr", 0.0))
+    if abs(h) > 1e-6:
+        a = np.asarray(out, dtype=np.float32) / 255.0
+        y = _luma(a)
+        yi = Image.fromarray((np.clip(y, 0, 1) * 255).astype(np.uint8), "L")
+        yb = np.asarray(yi.filter(ImageFilter.GaussianBlur(hdr_sigma(out.width))), dtype=np.float32) / 255.0
+        a = a + ((y - yb) * 1.4 * h)[..., None]
+        out = Image.fromarray((np.clip(a, 0, 1) * 255 + 0.5).astype(np.uint8))
     return out
 
 
@@ -249,3 +403,43 @@ def apply_finish(img, s):
         a = a * m if v > 0 else 1.0 - (1.0 - a) * m
         out = Image.fromarray((np.clip(a, 0, 1) * 255 + 0.5).astype(np.uint8))
     return out
+
+
+# ------------------------------------------------------------------ CC presets (one-click looks, 0 = no change)
+PRESETS = {
+    "HDR CC": dict(exposure=6, contrast=22, highlights=-35, shadows=35, blacks=-15, vibrance=55, saturation=15,
+                   warmth=6, hdr=50, clarity=35, sharpness=22, split_shadows=20, split_highlights=15),
+    "HDR CC warm (games / trailers)": dict(exposure=14, contrast=20, highlights=-25, shadows=40, blacks=-10,
+                                           vibrance=70, saturation=30, warmth=12, hdr=45, clarity=30, sharpness=20,
+                                           split_shadows=-45, split_highlights=-45),
+    "HDR Strong": dict(exposure=6, contrast=30, highlights=-55, shadows=50, blacks=-25, vibrance=65, saturation=15,
+                       warmth=6, hdr=90, clarity=55, sharpness=32, split_shadows=22, split_highlights=18),
+    "Teal & Orange (cinematic)": dict(contrast=20, blacks=-15, highlights=-15, vibrance=25, saturation=-6, warmth=4,
+                                      split_shadows=60, split_highlights=55, clarity=15),
+    "Punchy (social media)": dict(contrast=25, vibrance=50, saturation=10, clarity=30, sharpness=30, shadows=15,
+                                  highlights=-15, hdr=20),
+    "Bright & clean (vlog)": dict(exposure=12, shadows=30, highlights=-20, whites=10, vibrance=30, contrast=8,
+                                  sharpness=15),
+    "Golden hour": dict(warmth=38, tint=6, vibrance=25, contrast=10, highlights=-18, shadows=10, split_highlights=38),
+    "Sunset orange": dict(warmth=48, tint=10, contrast=16, vibrance=20, split_highlights=42, split_shadows=-10),
+    "Cold blue": dict(warmth=-32, saturation=-8, contrast=16, split_shadows=40, split_highlights=-25),
+    "Moody dark": dict(exposure=-12, contrast=30, blacks=-35, highlights=-20, saturation=-25, split_shadows=35,
+                       clarity=20, vignette=35),
+    "Cinematic film": dict(contrast=16, fade=22, saturation=-15, split_shadows=30, split_highlights=25, grain=14,
+                           vignette=20),
+    "Night neon": dict(tint=14, vibrance=60, contrast=22, blacks=-25, split_shadows=45, hdr=30, clarity=20),
+    "Cyberpunk": dict(tint=32, warmth=-12, vibrance=45, contrast=24, blacks=-20, split_shadows=50,
+                      split_highlights=-20, hdr=25),
+    "Anime vivid": dict(saturation=40, vibrance=40, contrast=15, sharpness=40, shadows=15, whites=10),
+    "Green nature": dict(vibrance=40, saturation=8, tint=-10, contrast=12, shadows=20, highlights=-20, hdr=25),
+    "Vintage fade": dict(fade=40, warmth=15, saturation=-25, grain=20, vignette=25, contrast=-10),
+    "Matte soft": dict(fade=35, contrast=-15, saturation=-10, highlights=-10),
+    "Black & white HDR": dict(saturation=-100, contrast=35, hdr=60, clarity=40, blacks=-20, sharpness=20),
+}
+
+
+def preset_ui(name, strength=100.0, user=None):
+    """The -100..100 value of every colour control for a preset at a strength (%). Controls not in the preset = 0."""
+    p = (user or {}).get(name) or PRESETS.get(name) or {}
+    k = float(strength) / 100.0
+    return {key: max(-100.0, min(100.0, float(p.get(key, 0.0)) * k)) for key in KEYS}

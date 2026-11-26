@@ -824,6 +824,64 @@ def t_short_editor():
     return f"planned (not exported) -> split / delete / undo / drag edge / bring back / move / play ({shown} frames) -> exported {got:.1f}s"
 
 
+def t_cc_presets():
+    """CC presets (HDR CC ...), vibrance / HDR detail / split toning, a .cube LUT with strength, before / after."""
+    import numpy as np
+    import app as A
+    import engine as E
+    import colour as CL
+    import preview as P
+    cube = os.path.join(tmp, "warm.cube")
+    n = 9
+    with open(cube, "w") as f:
+        f.write(f"TITLE \"warm\"\nLUT_3D_SIZE {n}\n")
+        for b in range(n):
+            for g in range(n):
+                for r in range(n):
+                    f.write(f"{min(1, r / (n - 1) * 1.1):.5f} {g / (n - 1):.5f} {b / (n - 1) * 0.85:.5f}\n")
+    info = E.probe_info(movie)
+    cpu = [c for c in E.CODECS if "CPU" in c][0]
+    base = dict(resolution="480p", codec=cpu, rate_mode=E.RATE_MODES[0], bitrate=3000)
+    r = E.Runner(E.sanitize(base), lambda *_: None, None, None)
+    means = {}
+    for k, name in enumerate(["HDR CC", "HDR CC warm (games / trailers)", "Teal & Orange (cinematic)", "Black & white HDR"]):
+        cfg = {key: CL.to_cfg(key, v) for key, v in CL.preset_ui(name).items()}
+        S = E.sanitize(dict(base, **cfg))
+        out = os.path.join(tmp, f"cc{k}.mp4")
+        assert r.cut(movie, 1, 2, out, info, None, S), name
+        img = P.compose(movie, 1.5, S, info)
+        means[name] = float(np.asarray(img.convert("RGB"), dtype=np.float32).mean())
+    for mix in (0.5, 1.0):
+        S = E.sanitize(dict(base, lut_path=cube, lut_mix=mix))
+        assert r.cut(movie, 1, 2, os.path.join(tmp, f"lut{mix}.mp4"), info, None, S), mix
+    a = np.asarray(P.compose(movie, 1.5, E.sanitize(dict(base, lut_path=cube)), info).convert("RGB"), dtype=np.float32)
+    b0 = np.asarray(P.compose(movie, 1.5, E.sanitize(base), info).convert("RGB"), dtype=np.float32)
+    assert a[..., 2].mean() < b0[..., 2].mean() - 3, "the LUT did not change the preview"
+    cmp_img = P.compose(movie, 1.5, dict(E.sanitize(dict(base, **{k: CL.to_cfg(k, v) for k, v in CL.preset_ui("HDR CC").items()})),
+                                         _compare=True), info)
+    assert cmp_img.size[0] > 100
+    w = A.App()
+    w.update()
+    st = w.simple
+    st.load_movie(movie)
+    st.apply_cc_preset("HDR CC")
+    assert st.cfg["hdr"] > 0.3 and st.cfg["vibrance"] > 0.3, {k: st.cfg[k] for k in ("hdr", "vibrance")}
+    st.cc_strength.set(50)
+    st.apply_cc_preset("HDR CC")
+    assert abs(st.cfg["hdr"] - 0.25) < 0.02, st.cfg["hdr"]
+    w.prefs.setdefault("cc_presets", {})["Mine"] = {"warmth": 40}
+    st.cc_fill_grid()
+    st.apply_cc_preset("Mine")
+    assert st.cfg["warmth"] > 0.1 and st.cfg["hdr"] == 0.0
+    st.cc_compare.set(True)
+    st.shown = -1
+    st.render_now()
+    assert _pump(w, 30, lambda: st.shown >= 0), "no before / after preview"
+    del w.prefs["cc_presets"]["Mine"]
+    w.destroy()
+    return f"{len(CL.PRESETS)} presets; 4 exported; LUT 50% / 100% OK; before / after preview OK"
+
+
 def t_youtube():
     """yt-dlp + deno are in the folder. A real YouTube download is tried; YouTube often blocks cloud machines, so a
     refusal there is only reported."""
@@ -942,6 +1000,7 @@ step("Viral Clips tab (find + export as found, Export again, project)", t_viral_
 step("Audio tracks: keep / remove languages (MKVToolNix style)", t_audio_tracks)
 step("Captions from SRT (styles, preview, export, pieces)", t_captions)
 step("Auto Short: check + edit on the timeline before export", t_short_editor)
+step("CC presets (HDR CC, LUT, before / after)", t_cc_presets)
 step("YouTube link download (yt-dlp + deno)", t_youtube)
 step("silence cut, one part at a time (AI Clipping)", t_silence_per_part)
 step("plain parts export (nothing removed)", t_plain_export)

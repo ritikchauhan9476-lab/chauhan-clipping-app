@@ -297,6 +297,28 @@ def effects_img(img, s):
 
 def compose(movie, t, s, info, short=SHORT):
     """Full preview frame at movie time t, for the current settings s."""
+    if s.get("_compare"):                       # before / after: left half without colour correction
+        after = compose(movie, t, dict(s, _compare=False), info, short)
+        before = compose(movie, t, dict(s, _compare=False, lut_path="", **CL.NEUTRAL), info, short)
+        w, h = after.size
+        out = after.copy()
+        out.paste(before.crop((0, 0, w // 2, h)), (0, 0))
+        from PIL import ImageDraw
+        d = ImageDraw.Draw(out)
+        d.rectangle([w // 2 - 1, 0, w // 2 + 1, h], fill=(255, 255, 255, 255))
+        fs = max(12, h // 28)
+        try:
+            from PIL import ImageFont
+            ff = E.resolve_font("Arial Black") or E.resolve_font("Arial")
+            font = ImageFont.truetype(ff, fs) if ff else ImageFont.load_default()
+        except Exception:
+            from PIL import ImageFont
+            font = ImageFont.load_default()
+        for txt, x in (("BEFORE", w // 4), ("AFTER", 3 * w // 4)):
+            tw = d.textlength(txt, font=font)
+            d.text((x - tw / 2, h * 0.04), txt, font=font, fill=(255, 255, 255, 255), stroke_width=max(2, fs // 10),
+                   stroke_fill=(0, 0, 0, 255))
+        return out
     s = E.sanitize(s)
     dur = info["duration"]
     t = min(max(0.0, t), max(0.0, dur - 0.05))

@@ -82,6 +82,7 @@ DEFAULTS = dict(
     speed=1.0, vfade_in=0.0, vfade_out=0.0, fx_bw=False, fx_sepia=False, fx_blur=0.0, fx_denoise=False,
     fx_stab=False,
     bg_color="#1E1E1E", blur_amount=25, fit_scale=100.0, fit_y=50.0,   # background of the final frame
+    lut_path="", lut_mix=1.0,                                           # a .cube LUT (CC presets) + its strength
     **CL.NEW_DEFAULTS,                                                  # tint, exposure, shadows, ... (colour.py)
     # chroma key
     chroma_on=False, chroma_color="#00FF00", chroma_sim=0.15, chroma_blend=0.10,
@@ -1086,6 +1087,9 @@ def build_command(movie, start, dur, out, s, info, crop=None, codec=None, previe
     cf = color_filters(s, sw) + effect_filters(s)
     if cf:
         add(",".join(cf))
+    lines_, cur_ = CL.ffmpeg_local(s, sw, st["cur"], newlab, fe)       # LUT + HDR detail
+    fl.extend(lines_)
+    st["cur"] = cur_
 
     def clip_t(t_abs):
         """movie time -> time in this clip (None = cut out)."""
